@@ -63,6 +63,56 @@ server.tool(
 );
 
 server.tool(
+  'react_to_message',
+  'React to a message with an emoji. If no message_id is provided, reacts to the most recent message in the chat.',
+  {
+    emoji: z.string().describe('The emoji to react with (e.g. "👍", "❤️", "🔥", "✅")'),
+    message_id: z.string().optional().describe('The message ID to react to. Omit to react to the latest message.'),
+  },
+  async (args) => {
+    const data: Record<string, string | undefined> = {
+      type: 'reaction',
+      chatJid,
+      emoji: args.emoji,
+      messageId: args.message_id || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `Reacted with ${args.emoji}` }] };
+  },
+);
+
+server.tool(
+  'create_poll',
+  'Create a poll in the chat. Discord only. Answers are limited to 10 options.',
+  {
+    question: z.string().describe('The poll question'),
+    answers: z.array(z.string()).min(1).max(10).describe('Poll answer options (1-10)'),
+    duration_hours: z.number().min(1).max(768).default(24).describe('How long the poll runs in hours (default: 24, max: 768 = 32 days)'),
+    allow_multiselect: z.boolean().default(false).describe('Whether users can select multiple answers'),
+  },
+  async (args) => {
+    const data = {
+      type: 'poll',
+      chatJid,
+      question: args.question,
+      answers: args.answers,
+      durationHours: args.duration_hours,
+      allowMultiselect: args.allow_multiselect,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `Poll created: "${args.question}" with ${args.answers.length} options` }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

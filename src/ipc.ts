@@ -12,6 +12,8 @@ import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
+  sendReaction: (jid: string, emoji: string, messageId?: string) => Promise<void>;
+  sendPoll: (jid: string, question: string, answers: string[], durationHours: number, allowMultiselect: boolean) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -90,6 +92,46 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
+                  );
+                }
+              } else if (data.type === 'reaction' && data.chatJid && data.emoji) {
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  await deps.sendReaction(data.chatJid, data.emoji, data.messageId);
+                  logger.info(
+                    { chatJid: data.chatJid, emoji: data.emoji, sourceGroup },
+                    'IPC reaction sent',
+                  );
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC reaction attempt blocked',
+                  );
+                }
+              } else if (data.type === 'poll' && data.chatJid && data.question && data.answers) {
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  await deps.sendPoll(
+                    data.chatJid,
+                    data.question,
+                    data.answers,
+                    data.durationHours ?? 24,
+                    data.allowMultiselect ?? false,
+                  );
+                  logger.info(
+                    { chatJid: data.chatJid, question: data.question, sourceGroup },
+                    'IPC poll created',
+                  );
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC poll attempt blocked',
                   );
                 }
               }

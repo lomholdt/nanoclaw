@@ -6,6 +6,7 @@ import {
   TextChannel,
 } from 'discord.js';
 
+
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -42,6 +43,7 @@ export class DiscordChannel implements Channel {
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.GuildMessageReactions,
       ],
     });
 
@@ -235,6 +237,97 @@ export class DiscordChannel implements Channel {
       this.client.destroy();
       this.client = null;
       logger.info('Discord bot stopped');
+    }
+  }
+
+  async sendReaction(jid: string, emoji: string, messageId?: string): Promise<void> {
+    if (!this.client) {
+      logger.warn('Discord client not initialized');
+      return;
+    }
+
+    try {
+      const channelId = jid.replace(/^dc:/, '');
+      const channel = await this.client.channels.fetch(channelId);
+
+      if (!channel || !('messages' in channel)) {
+        logger.warn({ jid }, 'Discord channel not found or not text-based');
+        return;
+      }
+
+      const textChannel = channel as TextChannel;
+
+      // If no messageId, react to the most recent message
+      let targetMessage: Message;
+      if (messageId) {
+        targetMessage = await textChannel.messages.fetch(messageId);
+      } else {
+        const recent = await textChannel.messages.fetch({ limit: 1 });
+        const latest = recent.first();
+        if (!latest) {
+          logger.warn({ jid }, 'No messages found to react to');
+          return;
+        }
+        targetMessage = latest;
+      }
+
+      // Resolve custom guild emoji by name (e.g. "nice" → guild emoji object)
+      let resolvedEmoji: string | import('discord.js').GuildEmoji = emoji;
+      if (!/^\p{Emoji}/u.test(emoji) && !emoji.startsWith('<')) {
+        const guild = targetMessage.guild;
+        if (guild) {
+          const custom = guild.emojis.cache.find(
+            (e) => e.name?.toLowerCase() === emoji.toLowerCase(),
+          );
+          if (custom) {
+            resolvedEmoji = custom;
+          } else {
+            logger.warn({ jid, emoji }, 'Custom emoji not found in guild');
+            return;
+          }
+        }
+      }
+
+      await targetMessage.react(resolvedEmoji);
+      logger.info({ jid, emoji, messageId: targetMessage.id }, 'Discord reaction sent');
+    } catch (err) {
+      logger.error({ jid, emoji, err }, 'Failed to send Discord reaction');
+    }
+  }
+
+  async sendPoll(
+    jid: string,
+    question: string,
+    answers: string[],
+    durationHours: number,
+    allowMultiselect: boolean,
+  ): Promise<void> {
+    if (!this.client) {
+      logger.warn('Discord client not initialized');
+      return;
+    }
+
+    try {
+      const channelId = jid.replace(/^dc:/, '');
+      const channel = await this.client.channels.fetch(channelId);
+
+      if (!channel || !('send' in channel)) {
+        logger.warn({ jid }, 'Discord channel not found or not text-based');
+        return;
+      }
+
+      const textChannel = channel as TextChannel;
+      await textChannel.send({
+        poll: {
+          question: { text: question },
+          answers: answers.map((a) => ({ text: a })),
+          duration: durationHours,
+          allowMultiselect,
+        },
+      });
+      logger.info({ jid, question }, 'Discord poll created');
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to create Discord poll');
     }
   }
 

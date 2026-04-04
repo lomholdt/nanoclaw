@@ -91,6 +91,10 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: emoji reaction. messageId is platform-specific; omit to react to latest.
+  sendReaction?(jid: string, emoji: string, messageId?: string): Promise<void>;
+  // Optional: create a poll in the channel.
+  sendPoll?(jid: string, question: string, answers: string[], durationHours: number, allowMultiselect: boolean): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
