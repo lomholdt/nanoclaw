@@ -724,7 +724,10 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       if (!channel.sendReaction) {
-        logger.warn({ jid, channel: channel.name }, 'Channel does not support reactions');
+        logger.warn(
+          { jid, channel: channel.name },
+          'Channel does not support reactions',
+        );
         return Promise.resolve();
       }
       return channel.sendReaction(jid, emoji, messageId);
@@ -733,10 +736,19 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       if (!channel.sendPoll) {
-        logger.warn({ jid, channel: channel.name }, 'Channel does not support polls');
+        logger.warn(
+          { jid, channel: channel.name },
+          'Channel does not support polls',
+        );
         return Promise.resolve();
       }
-      return channel.sendPoll(jid, question, answers, durationHours, allowMultiselect);
+      return channel.sendPoll(
+        jid,
+        question,
+        answers,
+        durationHours,
+        allowMultiselect,
+      );
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

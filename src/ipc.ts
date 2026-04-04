@@ -12,8 +12,18 @@ import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
-  sendReaction: (jid: string, emoji: string, messageId?: string) => Promise<void>;
-  sendPoll: (jid: string, question: string, answers: string[], durationHours: number, allowMultiselect: boolean) => Promise<void>;
+  sendReaction: (
+    jid: string,
+    emoji: string,
+    messageId?: string,
+  ) => Promise<void>;
+  sendPoll: (
+    jid: string,
+    question: string,
+    answers: string[],
+    durationHours: number,
+    allowMultiselect: boolean,
+  ) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -94,13 +104,21 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     'Unauthorized IPC message attempt blocked',
                   );
                 }
-              } else if (data.type === 'reaction' && data.chatJid && data.emoji) {
+              } else if (
+                data.type === 'reaction' &&
+                data.chatJid &&
+                data.emoji
+              ) {
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  await deps.sendReaction(data.chatJid, data.emoji, data.messageId);
+                  await deps.sendReaction(
+                    data.chatJid,
+                    data.emoji,
+                    data.messageId,
+                  );
                   logger.info(
                     { chatJid: data.chatJid, emoji: data.emoji, sourceGroup },
                     'IPC reaction sent',
@@ -111,7 +129,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     'Unauthorized IPC reaction attempt blocked',
                   );
                 }
-              } else if (data.type === 'poll' && data.chatJid && data.question && data.answers) {
+              } else if (
+                data.type === 'poll' &&
+                data.chatJid &&
+                data.question &&
+                data.answers
+              ) {
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
@@ -125,7 +148,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     data.allowMultiselect ?? false,
                   );
                   logger.info(
-                    { chatJid: data.chatJid, question: data.question, sourceGroup },
+                    {
+                      chatJid: data.chatJid,
+                      question: data.question,
+                      sourceGroup,
+                    },
                     'IPC poll created',
                   );
                 } else {

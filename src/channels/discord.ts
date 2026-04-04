@@ -6,7 +6,6 @@ import {
   TextChannel,
 } from 'discord.js';
 
-
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -240,7 +239,11 @@ export class DiscordChannel implements Channel {
     }
   }
 
-  async sendReaction(jid: string, emoji: string, messageId?: string): Promise<void> {
+  async sendReaction(
+    jid: string,
+    emoji: string,
+    messageId?: string,
+  ): Promise<void> {
     if (!this.client) {
       logger.warn('Discord client not initialized');
       return;
@@ -289,7 +292,10 @@ export class DiscordChannel implements Channel {
       }
 
       await targetMessage.react(resolvedEmoji);
-      logger.info({ jid, emoji, messageId: targetMessage.id }, 'Discord reaction sent');
+      logger.info(
+        { jid, emoji, messageId: targetMessage.id },
+        'Discord reaction sent',
+      );
     } catch (err) {
       logger.error({ jid, emoji, err }, 'Failed to send Discord reaction');
     }
