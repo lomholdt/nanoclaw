@@ -1,3 +1,5 @@
+import net from 'net';
+
 import { getSignalSenderNames } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -9,14 +11,13 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
-import WebSocket from 'ws';
 
-const DEFAULT_API_URL = 'http://localhost:8080';
-const DEFAULT_POLL_INTERVAL = 2000;
-const MAX_POLL_INTERVAL = 5000;
-const BACKOFF_MULTIPLIER = 1.2;
+const DEFAULT_HOST = '127.0.0.1';
+const DEFAULT_PORT = 6001;
 const MAX_MESSAGE_LENGTH = 4000;
-const WS_RECONNECT_INTERVAL = 5000;
+const RECONNECT_INTERVAL = 5000;
+const MAX_RECONNECT_INTERVAL = 60000;
+const RECONNECT_BACKOFF = 1.5;
 
 /** Image file extensions that Signal can render inline */
 const IMAGE_EXTENSIONS = /\.(gif|png|jpe?g|webp)(\?[^\s)]*)?$/i;
@@ -78,7 +79,7 @@ async function downloadAsBase64(
   }
 }
 
-// --- Types for signal-cli-rest-api envelopes ---
+// --- Types for signal-cli JSON-RPC envelopes ---
 
 interface SignalAttachment {
   contentType?: string;
@@ -126,6 +127,15 @@ export interface SignalEnvelope {
   envelope: SignalEnvelopeData;
 }
 
+interface JsonRpcResponse {
+  jsonrpc: string;
+  id?: number;
+  result?: Record<string, unknown>;
+  error?: { code: number; message: string; data?: unknown };
+  method?: string;
+  params?: Record<string, unknown>;
+}
+
 export interface SignalChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
@@ -135,81 +145,46 @@ export interface SignalChannelOpts {
 export class SignalChannel implements Channel {
   name = 'signal';
 
-  private apiUrl: string;
+  private host: string;
+  private port: number;
   private account: string;
-  private basePollInterval: number;
-  private currentPollInterval: number;
-  private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private connected = false;
   private opts: SignalChannelOpts;
+  /** TCP socket to signal-cli daemon */
+  private socket: net.Socket | null = null;
+  /** Line buffer for incoming JSON-RPC messages */
+  private buffer = '';
+  /** Pending RPC requests awaiting responses */
+  private pendingRequests = new Map<
+    number,
+    {
+      resolve: (result: Record<string, unknown>) => void;
+      reject: (err: Error) => void;
+    }
+  >();
+  /** Auto-incrementing RPC request ID */
+  private nextId = 1;
+  /** Current reconnect interval (exponential backoff) */
+  private reconnectInterval = RECONNECT_INTERVAL;
   /** Timestamps of messages we sent, used for echo prevention (10s TTL). */
   private sentTimestamps = new Set<string>();
   /** Maps Signal UUIDs to display names, built from incoming messages. */
   private nameCache = new Map<string, string>();
-  /** True while a poll request is in-flight — prevents stacking. */
-  private polling = false;
-  /** Consecutive polls with no messages — drives backoff. */
-  private idlePolls = 0;
-  /** WebSocket connection for json-rpc mode. */
-  private ws: WebSocket | null = null;
-  /** Whether the API is running in json-rpc mode. */
-  private jsonRpcMode = false;
-  /** Maps internal group IDs to encoded group IDs for sending. */
-  private groupIdMap = new Map<string, string>();
 
   constructor(
-    apiUrl: string,
+    host: string,
+    port: number,
     account: string,
     opts: SignalChannelOpts,
-    pollInterval = DEFAULT_POLL_INTERVAL,
   ) {
-    this.apiUrl = apiUrl.replace(/\/$/, '');
+    this.host = host;
+    this.port = port;
     this.account = account;
     this.opts = opts;
-    this.basePollInterval = pollInterval;
-    this.currentPollInterval = pollInterval;
   }
 
   async connect(): Promise<void> {
-    // Verify signal-cli-rest-api is reachable and detect mode
-    try {
-      const res = await fetch(`${this.apiUrl}/v1/about`);
-      if (!res.ok) {
-        throw new Error(`signal-cli-rest-api returned ${res.status}`);
-      }
-      const about = (await res.json()) as { mode?: string };
-      this.jsonRpcMode = about.mode === 'json-rpc';
-    } catch (err) {
-      throw new Error(
-        `Cannot connect to signal-cli-rest-api at ${this.apiUrl}: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-
-    // Build group ID map (internal_id → encoded id for sending)
-    try {
-      const groupsRes = await fetch(
-        `${this.apiUrl}/v1/groups/${encodeURIComponent(this.account)}`,
-      );
-      if (groupsRes.ok) {
-        const groups = (await groupsRes.json()) as Array<{
-          id?: string;
-          internal_id?: string;
-        }>;
-        for (const g of groups) {
-          if (g.internal_id && g.id) {
-            this.groupIdMap.set(g.internal_id, g.id);
-          }
-        }
-        logger.info(
-          { count: this.groupIdMap.size },
-          'Signal group ID map loaded',
-        );
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Failed to load Signal group list');
-    }
-
-    // Seed name cache from DB history + own account
+    // Seed name cache from DB history
     const dbNames = getSignalSenderNames();
     for (const [uuid, name] of dbNames) {
       this.nameCache.set(uuid, name);
@@ -218,111 +193,130 @@ export class SignalChannel implements Channel {
     logger.info({ count: this.nameCache.size }, 'Signal name cache seeded');
 
     this.connected = true;
+    await this.connectSocket();
 
-    if (this.jsonRpcMode) {
-      this.connectWebSocket();
-    } else {
-      this.schedulePoll();
-      this.pollMessages();
-    }
-
-    const modeLabel = this.jsonRpcMode ? 'websocket' : 'polling';
     console.log(`\n  Signal account: ${this.account}`);
-    console.log(`  Signal API: ${this.apiUrl} (${modeLabel})\n`);
+    console.log(`  Signal daemon: ${this.host}:${this.port} (json-rpc)\n`);
 
-    logger.info({ account: this.account, mode: modeLabel }, 'Signal channel connected');
+    logger.info(
+      { account: this.account, host: this.host, port: this.port },
+      'Signal channel connected',
+    );
   }
 
-  private connectWebSocket(): void {
-    if (!this.connected) return;
+  private connectSocket(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) return reject(new Error('Not connected'));
 
-    const wsUrl = this.apiUrl
-      .replace(/^http:/, 'ws:')
-      .replace(/^https:/, 'wss:');
-    const url = `${wsUrl}/v1/receive/${encodeURIComponent(this.account)}`;
+      this.socket = new net.Socket();
+      this.buffer = '';
+      let resolved = false;
 
-    this.ws = new WebSocket(url);
+      this.socket.connect(this.port, this.host, () => {
+        logger.info('Signal JSON-RPC socket connected');
+        this.reconnectInterval = RECONNECT_INTERVAL;
+        resolved = true;
+        resolve();
+      });
 
-    this.ws.on('message', (data: WebSocket.Data) => {
+      this.socket.on('data', (data: Buffer) => {
+        this.buffer += data.toString();
+        this.processBuffer();
+      });
+
+      this.socket.on('close', () => {
+        logger.warn('Signal JSON-RPC socket closed');
+        this.socket = null;
+        if (this.connected) {
+          setTimeout(() => {
+            this.connectSocket().catch(() => {});
+            this.reconnectInterval = Math.min(
+              this.reconnectInterval * RECONNECT_BACKOFF,
+              MAX_RECONNECT_INTERVAL,
+            );
+          }, this.reconnectInterval);
+        }
+      });
+
+      this.socket.on('error', (err) => {
+        logger.debug({ err }, 'Signal JSON-RPC socket error');
+        if (!resolved) {
+          resolved = true;
+          reject(err);
+        }
+      });
+    });
+  }
+
+  private processBuffer(): void {
+    const lines = this.buffer.split('\n');
+    this.buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
       try {
-        const envelope = JSON.parse(data.toString()) as SignalEnvelope;
-        this.handleEnvelope(envelope);
+        const msg = JSON.parse(line) as JsonRpcResponse;
+        this.handleJsonRpcMessage(msg);
       } catch (err) {
-        logger.debug({ err }, 'Signal websocket message parse error');
+        logger.debug({ err, line: line.slice(0, 200) }, 'JSON-RPC parse error');
       }
-    });
-
-    this.ws.on('open', () => {
-      logger.info('Signal websocket connected');
-    });
-
-    this.ws.on('close', () => {
-      logger.warn('Signal websocket closed');
-      if (this.connected) {
-        setTimeout(() => this.connectWebSocket(), WS_RECONNECT_INTERVAL);
-      }
-    });
-
-    this.ws.on('error', (err) => {
-      logger.debug({ err }, 'Signal websocket error');
-    });
+    }
   }
 
-  private schedulePoll(): void {
-    if (!this.connected) return;
-    if (this.pollTimer) clearTimeout(this.pollTimer);
-    this.pollTimer = setTimeout(() => this.pollMessages(), this.currentPollInterval);
-  }
-
-  async pollMessages(): Promise<void> {
-    if (!this.connected) return;
-    if (this.polling) {
-      this.schedulePoll();
+  private handleJsonRpcMessage(msg: JsonRpcResponse): void {
+    // Response to a request we sent
+    if (msg.id != null && this.pendingRequests.has(msg.id)) {
+      const pending = this.pendingRequests.get(msg.id)!;
+      this.pendingRequests.delete(msg.id);
+      if (msg.error) {
+        pending.reject(new Error(msg.error.message));
+      } else {
+        pending.resolve(msg.result || {});
+      }
       return;
     }
-    this.polling = true;
 
-    try {
-      const res = await fetch(
-        `${this.apiUrl}/v1/receive/${encodeURIComponent(this.account)}`,
-      );
-      if (!res.ok) {
-        logger.warn(
-          { status: res.status },
-          'Signal receive endpoint returned error',
-        );
-        this.backoff();
-        return;
-      }
-
-      const envelopes = (await res.json()) as SignalEnvelope[];
-
-      if (envelopes.length > 0) {
-        // Messages received — reset to fast polling
-        this.idlePolls = 0;
-        this.currentPollInterval = this.basePollInterval;
-      } else {
-        this.backoff();
-      }
-
-      for (const envelope of envelopes) {
-        this.handleEnvelope(envelope);
-      }
-    } catch (err) {
-      logger.debug({ err }, 'Signal poll error');
-      this.backoff();
-    } finally {
-      this.polling = false;
-      this.schedulePoll();
+    // Notification (incoming message)
+    if (msg.method === 'receive' && msg.params) {
+      this.handleEnvelope(msg.params as unknown as SignalEnvelope);
     }
   }
 
-  private backoff(): void {
-    this.idlePolls++;
-    this.currentPollInterval = Math.min(
-      this.basePollInterval * Math.pow(BACKOFF_MULTIPLIER, this.idlePolls),
-      MAX_POLL_INTERVAL,
-    );
+  /**
+   * Send a JSON-RPC request and wait for the response.
+   */
+  private rpcCall(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs = 30000,
+  ): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket || this.socket.destroyed) {
+        return reject(new Error('Signal socket not connected'));
+      }
+
+      const id = this.nextId++;
+      const req =
+        JSON.stringify({ jsonrpc: '2.0', method, params, id }) + '\n';
+
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`RPC timeout: ${method}`));
+      }, timeoutMs);
+
+      this.pendingRequests.set(id, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+
+      this.socket.write(req);
+    });
   }
 
   handleEnvelope(envelope: SignalEnvelope): void {
@@ -332,9 +326,7 @@ export class SignalChannel implements Channel {
     const dataMessage = data.dataMessage;
     if (!dataMessage) return;
 
-    const timestamp = new Date(
-      data.timestamp || Date.now(),
-    ).toISOString();
+    const timestamp = new Date(data.timestamp || Date.now()).toISOString();
     const sender = data.sourceNumber || data.source || '';
     const senderName = data.sourceName || sender;
     const msgId = `${data.timestamp}`;
@@ -368,18 +360,19 @@ export class SignalChannel implements Channel {
     // Build message content — resolve mentions (U+FFFC placeholders)
     let content = dataMessage.message || '';
     if (dataMessage.mentions && dataMessage.mentions.length > 0) {
-      // Sort mentions by start position descending so replacements don't shift offsets
       const sorted = [...dataMessage.mentions].sort(
         (a, b) => (b.start ?? 0) - (a.start ?? 0),
       );
       for (const mention of sorted) {
-        const name = mention.name || (mention.uuid && this.nameCache.get(mention.uuid)) || mention.uuid || 'unknown';
+        const name =
+          mention.name ||
+          (mention.uuid && this.nameCache.get(mention.uuid)) ||
+          mention.uuid ||
+          'unknown';
         const start = mention.start ?? 0;
         const length = mention.length ?? 1;
         content =
-          content.slice(0, start) +
-          `@${name}` +
-          content.slice(start + length);
+          content.slice(0, start) + `@${name}` + content.slice(start + length);
       }
     }
 
@@ -405,10 +398,9 @@ export class SignalChannel implements Channel {
 
     if (dataMessage.quote) {
       const quoteSender =
-        dataMessage.quote.authorName ||
-        dataMessage.quote.author ||
-        'Unknown';
-      replyToMessageId = dataMessage.quote.id != null ? `${dataMessage.quote.id}` : undefined;
+        dataMessage.quote.authorName || dataMessage.quote.author || 'Unknown';
+      replyToMessageId =
+        dataMessage.quote.id != null ? `${dataMessage.quote.id}` : undefined;
       replyToContent = dataMessage.quote.text || undefined;
       replyToSenderName = quoteSender;
       content = `[Reply to ${quoteSender}] ${content}`;
@@ -446,7 +438,16 @@ export class SignalChannel implements Channel {
     );
   }
 
-  async sendMessage(jid: string, text: string, attachments?: Array<{ contentType: string; filename: string; base64: string }>, replyTo?: { messageId: string; author: string }): Promise<void> {
+  async sendMessage(
+    jid: string,
+    text: string,
+    attachments?: Array<{
+      contentType: string;
+      filename: string;
+      base64: string;
+    }>,
+    replyTo?: { messageId: string; author: string },
+  ): Promise<void> {
     if (!this.connected) {
       logger.warn('Signal channel not connected');
       return;
@@ -458,158 +459,92 @@ export class SignalChannel implements Channel {
         extractImageUrls(text);
 
       // Convert markdown to plain text + Signal textStyle ranges
-      const { text: plainText, textStyle } = parseSignalStyles(textWithoutImages);
+      const { text: plainText, textStyle } =
+        parseSignalStyles(textWithoutImages);
 
-      // Build base request body
-      const body: Record<string, unknown> = {
+      // Build RPC params
+      const params: Record<string, unknown> = {
         message: plainText,
-        number: this.account,
       };
 
+      // Text styles (bold, italic, spoiler, etc.)
       if (textStyle.length > 0) {
-        body.text_style = textStyle.map(
+        params.textStyle = textStyle.map(
           (s) => `${s.start}:${s.length}:${s.style}`,
         );
       }
 
       // Set recipient (DM) or group
       if (jid.startsWith('signal-group:')) {
-        const internalId = jid.replace(/^signal-group:/, '');
-        const encodedId = this.groupIdMap.get(internalId);
-        if (!encodedId) {
-          throw new Error(`No encoded group ID found for ${internalId}`);
-        }
-        body.recipients = [encodedId];
+        const groupId = jid.replace(/^signal-group:/, '');
+        params.groupId = groupId;
       } else {
-        body.recipients = [jid.replace(/^signal:/, '')];
+        params.recipient = [jid.replace(/^signal:/, '')];
       }
 
-      // Add quote for reply threading
+      // Quote for reply threading
       if (replyTo) {
-        body.quote_timestamp = parseInt(replyTo.messageId, 10);
-        body.quote_author = replyTo.author;
+        params.quoteTimestamp = parseInt(replyTo.messageId, 10);
+        params.quoteAuthor = replyTo.author;
       }
 
-      // Download images and attach as base64
+      // Download image URLs and add as attachments
       if (imageUrls.length > 0) {
         const downloads = await Promise.all(
           imageUrls.slice(0, 5).map(downloadAsBase64),
         );
-        const attachments = downloads
+        const base64Attachments = downloads
           .filter((d): d is NonNullable<typeof d> => d !== null)
-          .map((d) => `data:${d.contentType};filename=${d.filename};base64,${d.base64}`);
-        if (attachments.length > 0) {
-          body.base64_attachments = attachments;
+          .map(
+            (d) =>
+              `data:${d.contentType};filename=${d.filename};base64,${d.base64}`,
+          );
+        if (base64Attachments.length > 0) {
+          params.attachments = base64Attachments;
         }
       }
 
-      // Add explicit attachments (e.g. voice messages)
+      // Explicit attachments (e.g. voice messages)
       if (attachments && attachments.length > 0) {
         const formatted = attachments.map(
-          (a) => `data:${a.contentType};filename=${a.filename};base64,${a.base64}`,
+          (a) =>
+            `data:${a.contentType};filename=${a.filename};base64,${a.base64}`,
         );
-        body.base64_attachments = [
-          ...((body.base64_attachments as string[]) || []),
+        params.attachments = [
+          ...((params.attachments as string[]) || []),
           ...formatted,
         ];
       }
 
-      // Split long messages — textStyle offsets won't be valid across
-      // chunks, so we drop styles when splitting. Attachments go with first chunk.
+      // Split long messages
       if (plainText.length > MAX_MESSAGE_LENGTH) {
         const chunks = splitText(plainText, MAX_MESSAGE_LENGTH);
         for (let i = 0; i < chunks.length; i++) {
-          await this.sendApiMessage({
-            ...body,
+          const chunkParams = {
+            ...params,
             message: chunks[i],
-            text_style: undefined,
-            // Only attach images to the first chunk
-            base64_attachments: i === 0 ? body.base64_attachments : undefined,
-          });
+            textStyle: undefined,
+            attachments: i === 0 ? params.attachments : undefined,
+          };
+          const result = await this.rpcCall('send', chunkParams);
+          this.cacheTimestamp(result);
         }
       } else {
-        await this.sendApiMessage(body);
+        const result = await this.rpcCall('send', params);
+        this.cacheTimestamp(result);
       }
 
-      logger.info({ jid, length: text.length, attachments: imageUrls.length }, 'Signal message sent');
+      logger.info(
+        { jid, length: text.length, attachments: imageUrls.length },
+        'Signal message sent',
+      );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Signal message');
     }
   }
 
-  /**
-   * Find known names in outbound text and convert them to Signal mentions.
-   * Matches both @Name and bare Name occurrences at word boundaries.
-   * Returns the modified text (with U+FFFC placeholders) and a mentions array.
-   */
-  private extractOutboundMentions(text: string): {
-    text: string;
-    mentions: Array<{ start: number; length: number; uuid: string }>;
-  } {
-    // Build reverse map: lowercase name → uuid (skip 'Claw' to avoid self-mentions)
-    const nameToUuid = new Map<string, string>();
-    for (const [uuid, name] of this.nameCache) {
-      if (uuid === this.account) continue;
-      nameToUuid.set(name.toLowerCase(), uuid);
-    }
-    if (nameToUuid.size === 0) return { text, mentions: [] };
-
-    // Build a regex that matches @Name or bare Name at word boundaries
-    // Sort by length descending to match longer names first
-    const names = [...nameToUuid.keys()].sort((a, b) => b.length - a.length);
-    const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    const pattern = new RegExp(`@?(${escaped.join('|')})\\b`, 'gi');
-
-    const matches: Array<{ index: number; length: number; uuid: string }> = [];
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      const uuid = nameToUuid.get(match[1].toLowerCase());
-      if (!uuid) continue;
-      matches.push({ index: match.index, length: match[0].length, uuid });
-    }
-
-    if (matches.length === 0) return { text, mentions: [] };
-
-    // Replace matches in reverse order to preserve offsets
-    const mentions: Array<{ start: number; length: number; uuid: string }> = [];
-    let result = text;
-    let offset = 0;
-
-    for (const m of matches.reverse()) {
-      const placeholder = '\uFFFC';
-      result =
-        result.slice(0, m.index) + placeholder + result.slice(m.index + m.length);
-    }
-
-    // Now find placeholder positions in the result for the mentions array
-    let pos = 0;
-    for (const m of [...matches].reverse()) {
-      const idx = result.indexOf('\uFFFC', pos);
-      if (idx === -1) break;
-      mentions.push({ start: idx, length: 1, uuid: m.uuid });
-      pos = idx + 1;
-    }
-
-    return { text: result, mentions };
-  }
-
-  private async sendApiMessage(body: Record<string, unknown>): Promise<void> {
-    const res = await fetch(`${this.apiUrl}/v2/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      throw new Error(`Signal send failed (${res.status}): ${errText}`);
-    }
-
-    // Cache the response timestamp for echo prevention
-    const result = (await res.json().catch(() => null)) as Record<
-      string,
-      unknown
-    > | null;
+  /** Cache sent timestamp for echo prevention */
+  private cacheTimestamp(result: Record<string, unknown>): void {
     if (result?.timestamp) {
       const ts = `${result.timestamp}`;
       this.sentTimestamps.add(ts);
@@ -627,14 +562,15 @@ export class SignalChannel implements Channel {
 
   async disconnect(): Promise<void> {
     this.connected = false;
-    if (this.pollTimer) {
-      clearTimeout(this.pollTimer);
-      this.pollTimer = null;
+    if (this.socket) {
+      this.socket.destroy();
+      this.socket = null;
     }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    // Reject any pending requests
+    for (const [, pending] of this.pendingRequests) {
+      pending.reject(new Error('Disconnected'));
     }
+    this.pendingRequests.clear();
     logger.info('Signal channel stopped');
   }
 
@@ -642,26 +578,17 @@ export class SignalChannel implements Channel {
     if (!this.connected) return;
 
     try {
-      const body: Record<string, unknown> = {};
+      const params: Record<string, unknown> = {
+        stop: !isTyping,
+      };
 
       if (jid.startsWith('signal-group:')) {
-        const internalId = jid.replace(/^signal-group:/, '');
-        const encodedId = this.groupIdMap.get(internalId);
-        if (!encodedId) return;
-        body.recipient = encodedId;
+        params.groupId = jid.replace(/^signal-group:/, '');
       } else {
-        body.recipient = jid.replace(/^signal:/, '');
+        params.recipient = [jid.replace(/^signal:/, '')];
       }
 
-      const method = isTyping ? 'PUT' : 'DELETE';
-      await fetch(
-        `${this.apiUrl}/v1/typing-indicator/${encodeURIComponent(this.account)}`,
-        {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        },
-      );
+      await this.rpcCall('sendTyping', params);
     } catch {
       // Typing indicators are best-effort
     }
@@ -676,44 +603,54 @@ export class SignalChannel implements Channel {
     if (!this.connected) return;
 
     try {
-      const body: Record<string, unknown> = {
-        reaction: emoji,
-        timestamp: messageId ? parseInt(messageId, 10) : undefined,
-        target_author: targetAuthor || this.account,
+      const params: Record<string, unknown> = {
+        emoji,
+        targetTimestamp: messageId ? parseInt(messageId, 10) : undefined,
+        targetAuthor: targetAuthor || this.account,
       };
 
       if (jid.startsWith('signal-group:')) {
-        const internalId = jid.replace(/^signal-group:/, '');
-        const encodedId = this.groupIdMap.get(internalId);
-        if (!encodedId) {
-          logger.warn({ jid }, 'No encoded group ID for reaction');
-          return;
-        }
-        body.recipient = encodedId;
+        params.groupId = jid.replace(/^signal-group:/, '');
       } else {
-        body.recipient = jid.replace(/^signal:/, '');
+        params.recipient = [jid.replace(/^signal:/, '')];
       }
 
-      const res = await fetch(
-        `${this.apiUrl}/v1/reactions/${encodeURIComponent(this.account)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        },
-      );
-
-      if (!res.ok) {
-        const errBody = await res.text().catch(() => '');
-        logger.warn(
-          { jid, emoji, status: res.status, body, errBody },
-          'Signal reaction failed',
-        );
-      } else {
-        logger.info({ jid, emoji }, 'Signal reaction sent');
-      }
+      await this.rpcCall('sendReaction', params);
+      logger.info({ jid, emoji }, 'Signal reaction sent');
     } catch (err) {
       logger.error({ jid, emoji, err }, 'Failed to send Signal reaction');
+    }
+  }
+
+  async sendPoll(
+    jid: string,
+    question: string,
+    answers: string[],
+    _durationHours: number,
+    allowMultiselect: boolean,
+  ): Promise<void> {
+    if (!this.connected) return;
+
+    try {
+      const params: Record<string, unknown> = {
+        question,
+        options: answers,
+      };
+
+      if (!allowMultiselect) {
+        params.multiSelect = false;
+      }
+
+      if (jid.startsWith('signal-group:')) {
+        params.groupId = jid.replace(/^signal-group:/, '');
+      } else {
+        params.recipient = [jid.replace(/^signal:/, '')];
+      }
+
+      await this.rpcCall('sendPollCreate', params);
+      logger.info({ jid, question }, 'Signal poll created');
+    } catch (err) {
+      logger.error({ jid, question, err }, 'Failed to create Signal poll');
     }
   }
 }
@@ -732,31 +669,22 @@ function splitText(text: string, maxLength: number): string[] {
 
 registerChannel('signal', (opts: ChannelOpts) => {
   const envVars = readEnvFile([
-    'SIGNAL_CLI_API_URL',
+    'SIGNAL_CLI_HOST',
+    'SIGNAL_CLI_PORT',
     'SIGNAL_ACCOUNT',
-    'SIGNAL_POLL_INTERVAL_MS',
   ]);
-  const apiUrl =
-    process.env.SIGNAL_CLI_API_URL || envVars.SIGNAL_CLI_API_URL || '';
-  const account =
-    process.env.SIGNAL_ACCOUNT || envVars.SIGNAL_ACCOUNT || '';
+  const host =
+    process.env.SIGNAL_CLI_HOST || envVars.SIGNAL_CLI_HOST || DEFAULT_HOST;
+  const port = parseInt(
+    process.env.SIGNAL_CLI_PORT || envVars.SIGNAL_CLI_PORT || `${DEFAULT_PORT}`,
+    10,
+  );
+  const account = process.env.SIGNAL_ACCOUNT || envVars.SIGNAL_ACCOUNT || '';
 
   if (!account) {
     logger.warn('Signal: SIGNAL_ACCOUNT not set');
     return null;
   }
 
-  const pollInterval = parseInt(
-    process.env.SIGNAL_POLL_INTERVAL_MS ||
-      envVars.SIGNAL_POLL_INTERVAL_MS ||
-      `${DEFAULT_POLL_INTERVAL}`,
-    10,
-  );
-
-  return new SignalChannel(
-    apiUrl || DEFAULT_API_URL,
-    account,
-    opts,
-    pollInterval,
-  );
+  return new SignalChannel(host, port, account, opts);
 });
