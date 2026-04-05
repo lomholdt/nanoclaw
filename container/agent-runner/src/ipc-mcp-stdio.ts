@@ -123,8 +123,39 @@ server.tool(
 );
 
 server.tool(
+  'pin_message',
+  'Pin a message in the chat. Signal only. If no message_id is provided, pins the most recent message.',
+  {
+    message_id: z
+      .string()
+      .optional()
+      .describe('The message ID to pin. Omit to pin the latest message.'),
+    duration_seconds: z
+      .number()
+      .optional()
+      .describe(
+        'How long to pin in seconds. Defaults to 86400 (24 hours). Use -1 for forever.',
+      ),
+  },
+  async (args) => {
+    const data: Record<string, string | undefined> = {
+      type: 'pin_message',
+      chatJid,
+      messageId: args.message_id || undefined,
+      durationSeconds: `${args.duration_seconds ?? 86400}`,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Message pinned.' }] };
+  },
+);
+
+server.tool(
   'create_poll',
-  'Create a poll in the chat. Discord only. Answers are limited to 10 options.',
+  'Create a poll in the chat. Signal and Discord. Answers are limited to 10 options.',
   {
     question: z.string().describe('The poll question'),
     answers: z.array(z.string()).min(1).max(10).describe('Poll answer options (1-10)'),

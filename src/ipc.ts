@@ -7,10 +7,16 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getMessageForReaction,
+  getTaskById,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import { Channel, RegisteredGroup } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,7 +27,11 @@ export interface IpcAttachment {
 }
 
 export interface IpcDeps {
-  sendMessage: (jid: string, text: string, attachments?: IpcAttachment[]) => Promise<void>;
+  sendMessage: (
+    jid: string,
+    text: string,
+    attachments?: IpcAttachment[],
+  ) => Promise<void>;
   sendReaction: (
     jid: string,
     emoji: string,
@@ -34,6 +44,7 @@ export interface IpcDeps {
     durationHours: number,
     allowMultiselect: boolean,
   ) => Promise<void>;
+  getChannel?: (jid: string) => Channel | undefined;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -135,13 +146,19 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       { maxBuffer: 10 * 1024 * 1024 },
                     );
                     const base64Audio = stdout.trim();
-                    await deps.sendMessage(
-                      data.chatJid,
-                      '',
-                      [{ contentType: 'audio/mpeg', filename: 'voice.mp3', base64: base64Audio }],
-                    );
+                    await deps.sendMessage(data.chatJid, '', [
+                      {
+                        contentType: 'audio/mpeg',
+                        filename: 'voice.mp3',
+                        base64: base64Audio,
+                      },
+                    ]);
                     logger.info(
-                      { chatJid: data.chatJid, sourceGroup, textLength: data.text.length },
+                      {
+                        chatJid: data.chatJid,
+                        sourceGroup,
+                        textLength: data.text.length,
+                      },
                       'IPC voice message sent',
                     );
                   } catch (err) {
@@ -179,6 +196,54 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC reaction attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'pin_message' &&
+                data.chatJid
+              ) {
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  const msg = getMessageForReaction(
+                    data.chatJid,
+                    data.messageId,
+                  );
+                  if (msg) {
+                    const channel = deps.getChannel?.(data.chatJid);
+                    if (channel && 'pinMessage' in channel) {
+                      const duration = data.durationSeconds
+                        ? parseInt(data.durationSeconds, 10)
+                        : -1;
+                      await (
+                        channel as { pinMessage: Function }
+                      ).pinMessage(
+                        data.chatJid,
+                        msg.id,
+                        msg.sender,
+                        duration,
+                      );
+                      logger.info(
+                        {
+                          chatJid: data.chatJid,
+                          messageId: msg.id,
+                          sourceGroup,
+                        },
+                        'IPC message pinned',
+                      );
+                    }
+                  } else {
+                    logger.warn(
+                      { chatJid: data.chatJid },
+                      'No message found to pin',
+                    );
+                  }
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC pin attempt blocked',
                   );
                 }
               } else if (

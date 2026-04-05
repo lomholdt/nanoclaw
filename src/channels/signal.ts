@@ -296,8 +296,7 @@ export class SignalChannel implements Channel {
       }
 
       const id = this.nextId++;
-      const req =
-        JSON.stringify({ jsonrpc: '2.0', method, params, id }) + '\n';
+      const req = JSON.stringify({ jsonrpc: '2.0', method, params, id }) + '\n';
 
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
@@ -651,6 +650,60 @@ export class SignalChannel implements Channel {
       logger.info({ jid, question }, 'Signal poll created');
     } catch (err) {
       logger.error({ jid, question, err }, 'Failed to create Signal poll');
+    }
+  }
+
+  async pinMessage(
+    jid: string,
+    messageId: string,
+    targetAuthor: string,
+    durationSeconds = -1,
+  ): Promise<void> {
+    if (!this.connected) return;
+
+    try {
+      const params: Record<string, unknown> = {
+        targetTimestamp: parseInt(messageId, 10),
+        targetAuthor,
+        pinDuration: durationSeconds,
+      };
+
+      if (jid.startsWith('signal-group:')) {
+        params.groupId = jid.replace(/^signal-group:/, '');
+      } else {
+        params.recipient = [jid.replace(/^signal:/, '')];
+      }
+
+      await this.rpcCall('sendPinMessage', params);
+      logger.info({ jid, messageId }, 'Signal message pinned');
+    } catch (err) {
+      logger.error({ jid, messageId, err }, 'Failed to pin Signal message');
+    }
+  }
+
+  async unpinMessage(
+    jid: string,
+    messageId: string,
+    targetAuthor: string,
+  ): Promise<void> {
+    if (!this.connected) return;
+
+    try {
+      const params: Record<string, unknown> = {
+        targetTimestamp: parseInt(messageId, 10),
+        targetAuthor,
+      };
+
+      if (jid.startsWith('signal-group:')) {
+        params.groupId = jid.replace(/^signal-group:/, '');
+      } else {
+        params.recipient = [jid.replace(/^signal:/, '')];
+      }
+
+      await this.rpcCall('sendUnpinMessage', params);
+      logger.info({ jid, messageId }, 'Signal message unpinned');
+    } catch (err) {
+      logger.error({ jid, messageId, err }, 'Failed to unpin Signal message');
     }
   }
 }

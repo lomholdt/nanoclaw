@@ -722,11 +722,13 @@ async function main(): Promise<void> {
     },
   });
   startIpcWatcher({
+    getChannel: (jid) => findChannel(channels, jid) || undefined,
     sendMessage: (jid, rawText, attachments) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       const text = formatOutbound(rawText, channel.name as ChannelType);
-      if (!text && (!attachments || attachments.length === 0)) return Promise.resolve();
+      if (!text && (!attachments || attachments.length === 0))
+        return Promise.resolve();
       return channel.sendMessage(jid, text || '', attachments);
     },
     sendReaction: (jid, emoji, messageId) => {
@@ -741,7 +743,12 @@ async function main(): Promise<void> {
       }
       // Look up the message details for channels that need it (Signal)
       const msg = getMessageForReaction(jid, messageId);
-      return channel.sendReaction(jid, emoji, msg?.id ?? messageId, msg?.sender);
+      return channel.sendReaction(
+        jid,
+        emoji,
+        msg?.id ?? messageId,
+        msg?.sender,
+      );
     },
     sendPoll: (jid, question, answers, durationHours, allowMultiselect) => {
       const channel = findChannel(channels, jid);
