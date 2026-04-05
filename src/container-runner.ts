@@ -316,9 +316,9 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  // Main group uses the default OneCLI agent; others use their own agent.
+  // All containers use the 'nanoclaw' OneCLI agent for credential injection.
   const agentIdentifier = input.isMain
-    ? undefined
+    ? 'nanoclaw'
     : group.folder.toLowerCase().replace(/_/g, '-');
   const containerArgs = await buildContainerArgs(
     mounts,

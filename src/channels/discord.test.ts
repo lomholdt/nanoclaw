@@ -92,7 +92,16 @@ vi.mock('discord.js', () => {
   // Mock TextChannel type
   class TextChannel {}
 
+  // Mock AttachmentBuilder
+  class AttachmentBuilder {
+    attachment: string;
+    constructor(url: string) {
+      this.attachment = url;
+    }
+  }
+
   return {
+    AttachmentBuilder,
     Client: MockClient,
     Events,
     GatewayIntentBits,
@@ -100,7 +109,11 @@ vi.mock('discord.js', () => {
   };
 });
 
-import { DiscordChannel, DiscordChannelOpts } from './discord.js';
+import {
+  DiscordChannel,
+  DiscordChannelOpts,
+  extractImageAttachments,
+} from './discord.js';
 
 // --- Test helpers ---
 
@@ -701,6 +714,79 @@ describe('DiscordChannel', () => {
     });
   });
 
+  // --- sendMessage with attachments ---
+
+  describe('sendMessage with attachments', () => {
+    it('sends attachments for image URLs and strips URL from text', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const mockChannel = {
+        send: vi.fn().mockResolvedValue(undefined),
+        sendTyping: vi.fn(),
+      };
+      currentClient().channels.fetch.mockResolvedValue(mockChannel);
+
+      await channel.sendMessage(
+        'dc:1234567890123456',
+        'Check this out https://example.com/funny.gif',
+      );
+
+      expect(mockChannel.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: 'Check this out',
+          files: expect.arrayContaining([
+            expect.objectContaining({
+              attachment: 'https://example.com/funny.gif',
+            }),
+          ]),
+        }),
+      );
+    });
+
+    it('sends plain text when no image URLs', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const mockChannel = {
+        send: vi.fn().mockResolvedValue(undefined),
+        sendTyping: vi.fn(),
+      };
+      currentClient().channels.fetch.mockResolvedValue(mockChannel);
+
+      await channel.sendMessage('dc:1234567890123456', 'Just text, no links');
+
+      expect(mockChannel.send).toHaveBeenCalledWith('Just text, no links');
+    });
+
+    it('attaches files to last chunk when splitting', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const mockChannel = {
+        send: vi.fn().mockResolvedValue(undefined),
+        sendTyping: vi.fn(),
+      };
+      currentClient().channels.fetch.mockResolvedValue(mockChannel);
+
+      const longText =
+        'x'.repeat(1990) + ' https://example.com/cat.png ' + 'y'.repeat(100);
+      await channel.sendMessage('dc:1234567890123456', longText);
+
+      // First chunk: plain text
+      const firstCall = mockChannel.send.mock.calls[0][0];
+      expect(typeof firstCall).toBe('string');
+
+      // Last chunk: has files
+      const lastCall =
+        mockChannel.send.mock.calls[mockChannel.send.mock.calls.length - 1][0];
+      expect(lastCall).toHaveProperty('files');
+    });
+  });
+
   // --- ownsJid ---
 
   describe('ownsJid', () => {
@@ -773,5 +859,88 @@ describe('DiscordChannel', () => {
       const channel = new DiscordChannel('test-token', createTestOpts());
       expect(channel.name).toBe('discord');
     });
+  });
+});
+
+// --- extractImageEmbeds ---
+
+describe('extractImageAttachments', () => {
+  it('extracts bare GIF URL and strips it from text', () => {
+    const { attachments, cleanedText } = extractImageAttachments(
+      'Look at this https://media.giphy.com/abc.gif',
+    );
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0].attachment).toBe('https://media.giphy.com/abc.gif');
+    expect(cleanedText).toBe('Look at this');
+  });
+
+  it('extracts bare image URLs with various extensions', () => {
+    const text =
+      'https://a.com/pic.png https://b.com/photo.jpg https://c.com/img.webp';
+    const { attachments } = extractImageAttachments(text);
+    expect(attachments).toHaveLength(3);
+  });
+
+  it('extracts image URL from markdown link and strips it', () => {
+    const { attachments, cleanedText } = extractImageAttachments(
+      'Check [this gif](https://example.com/funny.gif) out',
+    );
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0].attachment).toBe('https://example.com/funny.gif');
+    expect(cleanedText).toBe('Check  out');
+  });
+
+  it('extracts URLs from known image hosts without extension', () => {
+    const { attachments } = extractImageAttachments(
+      'https://giphy.com/gifs/abc123 https://tenor.com/view/funny',
+    );
+    expect(attachments).toHaveLength(2);
+  });
+
+  it('ignores non-image URLs', () => {
+    const { attachments, cleanedText } = extractImageAttachments(
+      'Visit https://example.com/page and https://docs.google.com/doc',
+    );
+    expect(attachments).toHaveLength(0);
+    expect(cleanedText).toBe(
+      'Visit https://example.com/page and https://docs.google.com/doc',
+    );
+  });
+
+  it('deduplicates same URL', () => {
+    const { attachments } = extractImageAttachments(
+      'https://a.com/pic.gif https://a.com/pic.gif',
+    );
+    expect(attachments).toHaveLength(1);
+  });
+
+  it('caps at 10 attachments', () => {
+    const urls = Array.from(
+      { length: 15 },
+      (_, i) => `https://example.com/${i}.png`,
+    ).join(' ');
+    const { attachments } = extractImageAttachments(urls);
+    expect(attachments).toHaveLength(10);
+  });
+
+  it('returns empty array for text without URLs', () => {
+    expect(
+      extractImageAttachments('Just some plain text').attachments,
+    ).toHaveLength(0);
+  });
+
+  it('handles URLs with query parameters', () => {
+    const { attachments } = extractImageAttachments(
+      'https://example.com/image.png?width=500&height=300',
+    );
+    expect(attachments).toHaveLength(1);
+  });
+
+  it('returns empty cleanedText when only a URL', () => {
+    const { attachments, cleanedText } = extractImageAttachments(
+      'https://example.com/cat.gif',
+    );
+    expect(attachments).toHaveLength(1);
+    expect(cleanedText).toBe('');
   });
 });

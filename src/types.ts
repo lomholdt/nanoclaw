@@ -87,7 +87,7 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string, attachments?: Array<{ contentType: string; filename: string; base64: string }>, replyTo?: { messageId: string; author: string }): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
@@ -96,7 +96,7 @@ export interface Channel {
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
   // Optional: emoji reaction. messageId is platform-specific; omit to react to latest.
-  sendReaction?(jid: string, emoji: string, messageId?: string): Promise<void>;
+  sendReaction?(jid: string, emoji: string, messageId?: string, targetAuthor?: string): Promise<void>;
   // Optional: create a poll in the channel.
   sendPoll?(
     jid: string,

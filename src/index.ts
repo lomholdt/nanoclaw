@@ -36,6 +36,7 @@ import {
   deleteSession,
   getAllTasks,
   getLastBotMessageTimestamp,
+  getMessageForReaction,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -283,6 +284,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  // Reply-thread the first output to the last triggering message
+  const lastMsg = missedMessages[missedMessages.length - 1];
+  const replyTo = lastMsg
+    ? { messageId: lastMsg.id, author: lastMsg.sender }
+    : undefined;
+
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
@@ -294,7 +301,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        // First reply threads to the triggering message; subsequent ones are standalone
+        const quote = !outputSentToUser ? replyTo : undefined;
+        await channel.sendMessage(chatJid, text, undefined, quote);
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -713,12 +722,12 @@ async function main(): Promise<void> {
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, rawText) => {
+    sendMessage: (jid, rawText, attachments) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       const text = formatOutbound(rawText, channel.name as ChannelType);
-      if (!text) return Promise.resolve();
-      return channel.sendMessage(jid, text);
+      if (!text && (!attachments || attachments.length === 0)) return Promise.resolve();
+      return channel.sendMessage(jid, text || '', attachments);
     },
     sendReaction: (jid, emoji, messageId) => {
       const channel = findChannel(channels, jid);
@@ -730,7 +739,9 @@ async function main(): Promise<void> {
         );
         return Promise.resolve();
       }
-      return channel.sendReaction(jid, emoji, messageId);
+      // Look up the message details for channels that need it (Signal)
+      const msg = getMessageForReaction(jid, messageId);
+      return channel.sendReaction(jid, emoji, msg?.id ?? messageId, msg?.sender);
     },
     sendPoll: (jid, question, answers, durationHours, allowMultiselect) => {
       const channel = findChannel(channels, jid);

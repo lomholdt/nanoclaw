@@ -68,6 +68,38 @@ server.tool(
 );
 
 server.tool(
+  'send_voice',
+  'Send a voice message (text-to-speech). The text will be converted to audio and sent as a voice note. Use for fun, emphasis, or when asked to speak.',
+  {
+    text: z.string().describe('The text to convert to speech'),
+    voice: z
+      .string()
+      .optional()
+      .describe(
+        'Voice ID. Defaults to en-US-EmmaNeural. Pick based on user preference:\n' +
+        'Women: en-US-EmmaNeural (cheerful, clear), en-US-AvaNeural (expressive, caring), en-US-AriaNeural (confident), en-US-JennyNeural (friendly)\n' +
+        'Men: en-US-BrianNeural (casual), en-US-AndrewNeural (warm, confident)\n' +
+        'Danish: da-DK-ChristelNeural (female), da-DK-JeppeNeural (male)\n' +
+        'Match the voice language to the text language.',
+      ),
+  },
+  async (args) => {
+    const data: Record<string, string | undefined> = {
+      type: 'voice_message',
+      chatJid,
+      text: args.text,
+      voice: args.voice || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Voice message queued.' }] };
+  },
+);
+
+server.tool(
   'react_to_message',
   'React to a message with an emoji. If no message_id is provided, reacts to the most recent message in the chat.',
   {

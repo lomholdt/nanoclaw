@@ -1,5 +1,7 @@
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
 
 import { CronExpressionParser } from 'cron-parser';
 
@@ -10,8 +12,16 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
+const execFileAsync = promisify(execFile);
+
+export interface IpcAttachment {
+  contentType: string;
+  filename: string;
+  base64: string;
+}
+
 export interface IpcDeps {
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: (jid: string, text: string, attachments?: IpcAttachment[]) => Promise<void>;
   sendReaction: (
     jid: string,
     emoji: string,
@@ -102,6 +112,48 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'voice_message' &&
+                data.chatJid &&
+                data.text
+              ) {
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  try {
+                    const ttsArgs = [data.text];
+                    if (data.voice) {
+                      ttsArgs.unshift('--voice', data.voice);
+                    }
+                    const { stdout } = await execFileAsync(
+                      path.resolve(process.cwd(), 'scripts/tts.sh'),
+                      ttsArgs,
+                      { maxBuffer: 10 * 1024 * 1024 },
+                    );
+                    const base64Audio = stdout.trim();
+                    await deps.sendMessage(
+                      data.chatJid,
+                      '',
+                      [{ contentType: 'audio/mpeg', filename: 'voice.mp3', base64: base64Audio }],
+                    );
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup, textLength: data.text.length },
+                      'IPC voice message sent',
+                    );
+                  } catch (err) {
+                    logger.error(
+                      { chatJid: data.chatJid, err, sourceGroup },
+                      'IPC voice message TTS failed',
+                    );
+                  }
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC voice message attempt blocked',
                   );
                 }
               } else if (

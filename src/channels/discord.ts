@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   Client,
   Events,
   GatewayIntentBits,
@@ -16,6 +17,51 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+
+/** Image file extensions that Discord can render inline */
+const IMAGE_EXTENSIONS = /\.(gif|png|jpe?g|webp|svg)(\?[^\s)]*)?$/i;
+
+/** Hosts that serve embeddable images even without a file extension */
+const IMAGE_HOSTS = /(?:giphy\.com|tenor\.com|imgur\.com)/i;
+
+/**
+ * Extract image/GIF URLs from text, return AttachmentBuilder objects
+ * and cleaned text with those URLs removed.
+ * Handles bare URLs and markdown [text](url).
+ * Discord caps attachments at 10 per message.
+ */
+export function extractImageAttachments(text: string): {
+  attachments: AttachmentBuilder[];
+  cleanedText: string;
+} {
+  const urlPattern =
+    /(?:\[(?:[^\]]*)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s)>\]]+))/g;
+  const seen = new Set<string>();
+  const attachments: AttachmentBuilder[] = [];
+  const imageMatches: string[] = []; // full match strings to strip
+
+  let match: RegExpExecArray | null;
+  while ((match = urlPattern.exec(text)) !== null) {
+    const url = match[1] || match[2];
+    if (seen.has(url)) continue;
+    seen.add(url);
+
+    if (IMAGE_EXTENSIONS.test(url) || IMAGE_HOSTS.test(url)) {
+      attachments.push(new AttachmentBuilder(url));
+      imageMatches.push(match[0]);
+    }
+  }
+
+  // Strip matched image URLs/links from the text
+  let cleaned = text;
+  for (const m of imageMatches) {
+    cleaned = cleaned.replace(m, '');
+  }
+  // Collapse leftover whitespace (double newlines, trailing spaces)
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+  return { attachments: attachments.slice(0, 10), cleanedText: cleaned };
+}
 
 export interface DiscordChannelOpts {
   onMessage: OnInboundMessage;
@@ -208,13 +254,36 @@ export class DiscordChannel implements Channel {
 
       const textChannel = channel as TextChannel;
 
+      // Extract image/GIF URLs and build attachments, strip URLs from text
+      const { attachments, cleanedText } = extractImageAttachments(text);
+      const content = attachments.length > 0 ? cleanedText : text;
+
       // Discord has a 2000 character limit per message — split if needed
       const MAX_LENGTH = 2000;
-      if (text.length <= MAX_LENGTH) {
-        await textChannel.send(text);
+      if (content.length <= MAX_LENGTH) {
+        if (attachments.length > 0) {
+          await textChannel.send({
+            content: content || undefined,
+            files: attachments,
+          });
+        } else {
+          await textChannel.send(content);
+        }
       } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await textChannel.send(text.slice(i, i + MAX_LENGTH));
+        const chunks: string[] = [];
+        for (let i = 0; i < content.length; i += MAX_LENGTH) {
+          chunks.push(content.slice(i, i + MAX_LENGTH));
+        }
+        // Send all chunks except the last as plain text
+        for (let i = 0; i < chunks.length - 1; i++) {
+          await textChannel.send(chunks[i]);
+        }
+        // Attach files to the last chunk
+        const last = chunks[chunks.length - 1];
+        if (attachments.length > 0) {
+          await textChannel.send({ content: last, files: attachments });
+        } else {
+          await textChannel.send(last);
         }
       }
       logger.info({ jid, length: text.length }, 'Discord message sent');

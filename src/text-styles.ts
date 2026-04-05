@@ -149,6 +149,19 @@ export function parseSignalStyles(rawText: string): {
       }
     }
 
+    // ── Spoiler  ||text|| ─────────────────────────────────────────────
+    if (s[i] === '|' && s[i + 1] === '|' && s[i + 2] && s[i + 2] !== ' ') {
+      const end = s.indexOf('||', i + 2);
+      if (end !== -1) {
+        const content = s.slice(i + 2, end);
+        const startOut = out.length;
+        out += content;
+        addStyle('SPOILER', startOut, out.length);
+        i = end + 2;
+        continue;
+      }
+    }
+
     // ── Italic  *text*  (single star, not part of **) ─────────────────
     if (
       s[i] === '*' &&

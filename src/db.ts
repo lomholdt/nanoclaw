@@ -395,6 +395,40 @@ export function getMessagesSince(
     .all(chatJid, sinceTimestamp, `${botPrefix}:%`, limit) as NewMessage[];
 }
 
+export function getSignalSenderNames(): Map<string, string> {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT sender, sender_name FROM messages
+       WHERE chat_jid LIKE 'signal%' AND sender != '' AND sender_name != ''
+       ORDER BY timestamp DESC`,
+    )
+    .all() as Array<{ sender: string; sender_name: string }>;
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (!map.has(row.sender)) {
+      map.set(row.sender, row.sender_name);
+    }
+  }
+  return map;
+}
+
+export function getMessageForReaction(
+  chatJid: string,
+  messageId?: string,
+): { id: string; sender: string } | undefined {
+  if (messageId) {
+    return db
+      .prepare('SELECT id, sender FROM messages WHERE chat_jid = ? AND id = ?')
+      .get(chatJid, messageId) as { id: string; sender: string } | undefined;
+  }
+  // No messageId — get the latest non-bot message
+  return db
+    .prepare(
+      'SELECT id, sender FROM messages WHERE chat_jid = ? AND is_bot_message = 0 ORDER BY timestamp DESC LIMIT 1',
+    )
+    .get(chatJid) as { id: string; sender: string } | undefined;
+}
+
 export function getLastBotMessageTimestamp(
   chatJid: string,
   botPrefix: string,
