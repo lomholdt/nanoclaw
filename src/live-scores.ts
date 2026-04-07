@@ -169,9 +169,7 @@ function formatDate(d: Date): string {
   return `${y}${m}${day}`;
 }
 
-function parseSetScores(
-  par: RawEvent['par'][string],
-): number[] {
+function parseSetScores(par: RawEvent['par'][string]): number[] {
   const sets: number[] = [];
   for (const key of ['rs80', 'rs81', 'rs82', 'rs83', 'rs84'] as const) {
     const val = par[key];
@@ -350,6 +348,8 @@ export async function fetchMatchDetails(
     player: string;
     assist: string;
     team: string;
+    cancelled?: boolean;
+    reason?: string;
   }>;
   cards: Array<{ elapsed: string; player: string; type: string; team: string }>;
   substitutions: Array<{
@@ -391,9 +391,10 @@ export async function fetchMatchDetails(
       team: string;
     }> = [];
 
-    // Traverse the incident structure: data.data.{period}.i[] or data.{period}.i[]
-    const dataObj = (data as { data?: Record<string, unknown> }).data || data;
-    for (const periodVal of Object.values(dataObj)) {
+    // Traverse the incident structure: data.i.periods.{period}.i[]
+    const iObj = (data as { i?: { periods?: Record<string, unknown> } }).i;
+    const periods = iObj?.periods || (data as { data?: Record<string, unknown> }).data || data;
+    for (const periodVal of Object.values(periods)) {
       if (typeof periodVal !== 'object' || !periodVal) continue;
       const period = periodVal as { i?: Array<Record<string, unknown>> };
       const incidentList = period.i;
@@ -407,11 +408,15 @@ export async function fetchMatchDetails(
         const team = String(inc.ptype || '');
 
         if (ic === 'goal') {
+          const cancelled =
+            String(inc.it_lbl || '').includes('CANCELLED') ||
+            String(inc.icon || '').includes('cancelled');
           goals.push({
             elapsed,
             player: mainPar?.pn || '?',
             assist: subPar?.[0]?.pn || '',
             team,
+            ...(cancelled && { cancelled: true, reason: String(inc.reason || 'VAR') }),
           });
         } else if (ic.includes('card')) {
           cards.push({
@@ -511,11 +516,13 @@ function formatMatchEvent(event: MatchEvent): string {
   const m = event.match;
   const { homeTeam: home, awayTeam: away } = m;
   const isTennis = m.sportId === 2;
-  const score = isTennis ? formatTennisScore(home, away) : `${home.score}-${away.score}`;
+  const score = isTennis
+    ? formatTennisScore(home, away)
+    : `${home.score}-${away.score}`;
 
   switch (event.type) {
     case 'goal': {
-      // Use detail (from incident) if available, otherwise determine from score diff
+      const isCancelled = event.detail?.includes('CANCELLED');
       const goalInfo = event.detail
         ? event.detail
         : (() => {
@@ -526,6 +533,9 @@ function formatMatchEvent(event: MatchEvent): string {
               : scorer;
             return elapsed;
           })();
+      if (isCancelled) {
+        return `❌ *Goal cancelled!* ${goalInfo}\n${home.name} ${score} ${away.name}\n_${m.tournamentName}_`;
+      }
       return `⚽ *GOAL!* ${goalInfo}\n${home.name} ${score} ${away.name}\n_${m.tournamentName}_`;
     }
     case 'kickoff':
@@ -722,6 +732,9 @@ async function handleIncidentUpdate(
     elapsed?: string;
     main_par?: { pn?: string };
     sub_par?: Array<{ pn?: string }>;
+    it_lbl?: string;
+    icon?: string;
+    reason?: string;
   }
 
   let incident: IncidentData | null = null;
@@ -772,32 +785,47 @@ async function handleIncidentUpdate(
       detail: mainPlayer ? `${elapsed}' ${mainPlayer}` : '',
     });
   } else if (ic === 'goal') {
-    const prev = matchStateCache.get(eventId);
-    if (prev) {
-      const updated = { ...prev, elapsedTime: elapsed };
-      const res = (incident as Record<string, unknown>).res as
-        | { home?: number; away?: number }
-        | undefined;
-      if (res) {
-        updated.homeTeam = {
-          ...updated.homeTeam,
-          score: res.home ?? updated.homeTeam.score,
-        };
-        updated.awayTeam = {
-          ...updated.awayTeam,
-          score: res.away ?? updated.awayTeam.score,
-        };
-      }
-      matchStateCache.set(eventId, updated);
+    const isCancelled =
+      incident.it_lbl?.includes('CANCELLED') ||
+      incident.icon?.includes('cancelled') ||
+      false;
 
-      const assistText = subPlayer ? ` (${subPlayer})` : '';
+    if (isCancelled) {
+      const reason = incident.reason || 'VAR';
       events.push({
         type: 'goal',
         eventId,
-        match: updated,
-        previousState: prev,
-        detail: `${elapsed}' ${mainPlayer}${assistText}`,
+        match,
+        detail: `${elapsed}' ${mainPlayer} — CANCELLED (${reason})`,
       });
+    } else {
+      const prev = matchStateCache.get(eventId);
+      if (prev) {
+        const updated = { ...prev, elapsedTime: elapsed };
+        const res = (incident as Record<string, unknown>).res as
+          | { home?: number; away?: number }
+          | undefined;
+        if (res) {
+          updated.homeTeam = {
+            ...updated.homeTeam,
+            score: res.home ?? updated.homeTeam.score,
+          };
+          updated.awayTeam = {
+            ...updated.awayTeam,
+            score: res.away ?? updated.awayTeam.score,
+          };
+        }
+        matchStateCache.set(eventId, updated);
+
+        const assistText = subPlayer ? ` (${subPlayer})` : '';
+        events.push({
+          type: 'goal',
+          eventId,
+          match: updated,
+          previousState: prev,
+          detail: `${elapsed}' ${mainPlayer}${assistText}`,
+        });
+      }
     }
   } else {
     // Log unhandled types so we can add them later

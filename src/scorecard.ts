@@ -74,6 +74,9 @@ function escapeXml(str: string): string {
 function eventLabel(event: MatchEvent): { text: string; emoji: string } {
   switch (event.type) {
     case 'goal':
+      if (event.detail?.includes('CANCELLED')) {
+        return { text: 'GOAL CANCELLED', emoji: '❌' };
+      }
       return { text: 'GOAL!', emoji: '⚽' };
     case 'kickoff':
       return { text: 'KICK-OFF', emoji: '🟢' };
@@ -90,10 +93,18 @@ function eventLabel(event: MatchEvent): { text: string; emoji: string } {
     case 'period_change':
       return { text: event.match.statusName.toUpperCase(), emoji: '▶️' };
     case 'live': {
-      const status = event.match.status === 'finished' ? 'FULL-TIME' :
-        event.match.status === 'inprogress' ? 'LIVE' : 'UPCOMING';
-      const emoji = event.match.status === 'finished' ? '🏁' :
-        event.match.status === 'inprogress' ? '🔴' : '⏳';
+      const status =
+        event.match.status === 'finished'
+          ? 'FULL-TIME'
+          : event.match.status === 'inprogress'
+            ? 'LIVE'
+            : 'UPCOMING';
+      const emoji =
+        event.match.status === 'finished'
+          ? '🏁'
+          : event.match.status === 'inprogress'
+            ? '🔴'
+            : '⏳';
       return { text: status, emoji };
     }
     default:
@@ -169,7 +180,10 @@ export async function generateScorecard(
     const composites: sharp.OverlayOptions[] = [];
 
     // Center logos vertically with padding to prevent clipping
-    const logoTop = Math.max(LOGO_PADDING, Math.round((CARD_HEIGHT - LOGO_SIZE) / 2));
+    const logoTop = Math.max(
+      LOGO_PADDING,
+      Math.round((CARD_HEIGHT - LOGO_SIZE) / 2),
+    );
 
     if (homeLogo) {
       composites.push({
