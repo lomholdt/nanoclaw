@@ -781,6 +781,40 @@ server.tool(
   },
 );
 
+server.tool(
+  'send_scorecard',
+  'Generate and send a scorecard image for a match. Shows team logos, score, and event type. Use after get_live_scores to get the event_id.',
+  {
+    event_id: z
+      .string()
+      .describe('The event ID from get_live_scores (e.g., "5205791")'),
+    event_type: z
+      .enum(['goal', 'kickoff', 'halftime', 'fulltime', 'red_card', 'period_change'])
+      .optional()
+      .describe('Type of event for the card label. Default: "goal"'),
+  },
+  async (args) => {
+    const data = {
+      type: 'send_scorecard',
+      event_id: args.event_id,
+      event_type: args.event_type || 'goal',
+      chatJid,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Scorecard for event ${args.event_id} is being generated and sent.`,
+        },
+      ],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

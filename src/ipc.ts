@@ -13,6 +13,7 @@ import {
   deleteLiveScoreSubscription,
   deleteTask,
   getLiveScoreSubscription,
+  getLiveScoreSubscriptionsForGroup,
   getMessageForReaction,
   getTaskById,
   updateTask,
@@ -365,6 +366,7 @@ export async function processTaskIpc(
     scheduled_date?: string;
     subscription_id?: string;
     date?: string;
+    event_type?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -676,6 +678,16 @@ export async function processTaskIpc(
           break;
         }
 
+        // Dedup: skip if this group already has an active subscription for this event
+        const existingSubs = getLiveScoreSubscriptionsForGroup(targetFolder);
+        if (existingSubs.some((s) => s.event_id === data.event_id)) {
+          logger.info(
+            { eventId: data.event_id, targetFolder },
+            'Live score subscription already exists, skipping duplicate',
+          );
+          break;
+        }
+
         const subId = `ls-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const status =
           data.scheduled_date &&
@@ -719,8 +731,16 @@ export async function processTaskIpc(
               matchName: m.matchName,
               tournament: m.tournamentName,
               scheduledDate: m.scheduledDate,
-              home: { name: m.homeTeam.name, short: m.homeTeam.shortName, score: m.homeTeam.score },
-              away: { name: m.awayTeam.name, short: m.awayTeam.shortName, score: m.awayTeam.score },
+              home: {
+                name: m.homeTeam.name,
+                short: m.homeTeam.shortName,
+                score: m.homeTeam.score,
+              },
+              away: {
+                name: m.awayTeam.name,
+                short: m.awayTeam.shortName,
+                score: m.awayTeam.score,
+              },
             }));
             const ipcDir = path.join(DATA_DIR, 'ipc', sourceGroup);
             const responseFile = path.join(ipcDir, `matches_${data.date}.json`);
@@ -730,7 +750,50 @@ export async function processTaskIpc(
               'Matches fetched for date',
             );
           } catch (err) {
-            logger.warn({ err, date: data.date }, 'Failed to fetch matches for date');
+            logger.warn(
+              { err, date: data.date },
+              'Failed to fetch matches for date',
+            );
+          }
+        })();
+      }
+      break;
+
+    case 'send_scorecard':
+      if (data.event_id && data.chatJid) {
+        void (async () => {
+          try {
+            const { fetchTodayScores } = await import('./live-scores.js');
+            const { generateScorecard } = await import('./scorecard.js');
+            const allMatches = await fetchTodayScores();
+            const matchState = allMatches.get(data.event_id!);
+            if (!matchState) {
+              logger.warn({ eventId: data.event_id }, 'Match not found for scorecard');
+              return;
+            }
+            const event = {
+              type: (data.event_type || 'goal') as 'goal',
+              eventId: data.event_id!,
+              match: matchState,
+            };
+            const buf = await generateScorecard(event);
+            if (!buf) {
+              logger.warn({ eventId: data.event_id }, 'Scorecard generation failed');
+              return;
+            }
+            const attachments = [
+              {
+                contentType: 'image/png',
+                filename: `scorecard-${data.event_id}.png`,
+                base64: buf.toString('base64'),
+              },
+            ];
+            const { homeTeam: home, awayTeam: away } = matchState;
+            const text = `${home.name} ${home.score}-${away.score} ${away.name}\n_${matchState.tournamentName}_`;
+            await deps.sendMessage(data.chatJid!, text, attachments);
+            logger.info({ eventId: data.event_id, chatJid: data.chatJid }, 'Scorecard sent');
+          } catch (err) {
+            logger.warn({ err, eventId: data.event_id }, 'Failed to send scorecard');
           }
         })();
       }
