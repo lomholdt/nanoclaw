@@ -147,6 +147,7 @@ export interface LiveScoreSubscription {
 
 export interface MatchState {
   id: string;
+  sportId: number; // 1=football, 2=tennis, 5=hockey, 20=handball, 30=cycling
   status: string; // inprogress, finished, upcoming, halftime
   statusName: string; // "1. halvleg"
   statusNameShort: string; // "1H", "HT", "2H", "SLUT"
@@ -164,6 +165,10 @@ export interface TeamState {
   shortName: string; // "FCN"
   score: number;
   halfTimeScore: number;
+  // Tennis-specific scores
+  setScores?: number[]; // games per set [6, 3, 1]
+  gameScore?: string; // current game points "15", "30", "40", "A"
+  serving?: boolean;
 }
 
 export interface MatchEvent {

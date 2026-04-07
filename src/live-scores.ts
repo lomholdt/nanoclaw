@@ -25,7 +25,12 @@ import {
   getSubscriptionsForEvent,
 } from './db.js';
 import { logger } from './logger.js';
-import type { LiveScoreSubscription, MatchEvent, MatchState } from './types.js';
+import type {
+  LiveScoreSubscription,
+  MatchEvent,
+  MatchState,
+  TeamState,
+} from './types.js';
 
 const inflateRawAsync = promisify(inflateRaw);
 const inflateAsync = promisify(inflate);
@@ -47,6 +52,7 @@ const ENET_ITERATIONS = 100;
 // Sport IDs used in data URLs and MQTT topics
 export const SPORT_IDS: Record<string, number> = {
   football: 1,
+  tennis: 2,
   golf: 3,
   hockey: 5,
   handball: 20,
@@ -84,6 +90,7 @@ export interface LiveScoresDeps {
 // Raw event data from the EnetScores JSON
 interface RawEvent {
   id: string;
+  sid: string; // sport id
   sd: string; // scheduled date
   st: string; // status
   sn: string; // status name
@@ -91,6 +98,7 @@ interface RawEvent {
   enm: string; // event name
   nm: string; // tournament name
   et: string; // elapsed time
+  serv?: string; // tennis: who's serving ("h" or "a")
   par: Record<
     string,
     {
@@ -99,6 +107,14 @@ interface RawEvent {
       pns: string;
       frs: string;
       rs1: string;
+      // Tennis-specific: rs80-rs84 = games per set, rs91 = game points
+      rs80?: string;
+      rs81?: string;
+      rs82?: string;
+      rs83?: string;
+      rs84?: string;
+      rs91?: string;
+      se?: string; // seed
     }
   >;
 }
@@ -153,7 +169,19 @@ function formatDate(d: Date): string {
   return `${y}${m}${day}`;
 }
 
+function parseSetScores(
+  par: RawEvent['par'][string],
+): number[] {
+  const sets: number[] = [];
+  for (const key of ['rs80', 'rs81', 'rs82', 'rs83', 'rs84'] as const) {
+    const val = par[key];
+    if (val !== undefined && val !== '') sets.push(parseInt(val) || 0);
+  }
+  return sets;
+}
+
 function parseRawEvent(ev: RawEvent): MatchState {
+  const sportId = parseInt(ev.sid) || 1;
   const home = ev.par?.['1'] || {
     pi: '',
     pn: '?',
@@ -168,8 +196,12 @@ function parseRawEvent(ev: RawEvent): MatchState {
     frs: '0',
     rs1: '0',
   };
+
+  const isTennis = sportId === 2;
+
   return {
     id: ev.id,
+    sportId,
     status: ev.st || 'unknown',
     statusName: ev.sn || '',
     statusNameShort: ev.sns || '',
@@ -183,6 +215,11 @@ function parseRawEvent(ev: RawEvent): MatchState {
       shortName: home.pns,
       score: parseInt(home.frs) || 0,
       halfTimeScore: parseInt(home.rs1) || 0,
+      ...(isTennis && {
+        setScores: parseSetScores(home),
+        gameScore: home.rs91 || '',
+        serving: ev.serv === 'h',
+      }),
     },
     awayTeam: {
       id: away.pi,
@@ -190,6 +227,11 @@ function parseRawEvent(ev: RawEvent): MatchState {
       shortName: away.pns,
       score: parseInt(away.frs) || 0,
       halfTimeScore: parseInt(away.rs1) || 0,
+      ...(isTennis && {
+        setScores: parseSetScores(away),
+        gameScore: away.rs91 || '',
+        serving: ev.serv === 'a',
+      }),
     },
   };
 }
@@ -451,10 +493,25 @@ function diffMatchStates(
 
 // --- Notification Formatting ---
 
+function formatTennisScore(home: TeamState, away: TeamState): string {
+  // Format: Sets (6-3 3-6 1-1) Game: 15-30
+  const homeSets = home.setScores || [];
+  const awaySets = away.setScores || [];
+  const setScores = homeSets
+    .map((s, i) => `${s}-${awaySets[i] ?? 0}`)
+    .join(' ');
+  const gameScore =
+    home.gameScore || away.gameScore
+      ? ` | ${home.gameScore || '0'}-${away.gameScore || '0'}`
+      : '';
+  return `Sets: ${home.score}-${away.score} (${setScores})${gameScore}`;
+}
+
 function formatMatchEvent(event: MatchEvent): string {
   const m = event.match;
   const { homeTeam: home, awayTeam: away } = m;
-  const score = `${home.score}-${away.score}`;
+  const isTennis = m.sportId === 2;
+  const score = isTennis ? formatTennisScore(home, away) : `${home.score}-${away.score}`;
 
   switch (event.type) {
     case 'goal': {
