@@ -619,6 +619,29 @@ Use available_groups.json to find the JID for a group. The folder name must be c
 // --- Live Scores Tools ---
 
 server.tool(
+  'get_available_sports',
+  'List all available sports that can be tracked for live scores.',
+  {},
+  async () => {
+    const sports = [
+      { name: 'Football', id: 1, key: 'football' },
+      { name: 'Golf', id: 3, key: 'golf' },
+      { name: 'Ice Hockey', id: 5, key: 'hockey' },
+      { name: 'Handball', id: 20, key: 'handball' },
+      { name: 'Cycling', id: 30, key: 'cycling' },
+    ];
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify(sports, null, 2),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'get_live_scores',
   "Get today's live football scores and match status. Returns all matches for today with scores, status (upcoming/live/finished), and tournament info.",
   {},
