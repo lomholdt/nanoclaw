@@ -166,7 +166,8 @@ export interface MatchEvent {
     | 'red_card'
     | 'yellow_card'
     | 'substitution'
-    | 'period_change';
+    | 'period_change'
+    | 'live';
   eventId: string;
   match: MatchState;
   previousState?: MatchState;

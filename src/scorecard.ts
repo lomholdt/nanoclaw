@@ -20,6 +20,7 @@ import { logger } from './logger.js';
 import type { MatchEvent, MatchState } from './types.js';
 
 const LOGO_SIZE = 96;
+const LOGO_PADDING = 8; // Extra padding so logos don't clip
 const CARD_WIDTH = 700;
 const CARD_HEIGHT = 180;
 const LOGO_CACHE_DIR = path.join(DATA_DIR, 'logo-cache');
@@ -88,6 +89,13 @@ function eventLabel(event: MatchEvent): { text: string; emoji: string } {
       return { text: 'SUBSTITUTION', emoji: '🔄' };
     case 'period_change':
       return { text: event.match.statusName.toUpperCase(), emoji: '▶️' };
+    case 'live': {
+      const status = event.match.status === 'finished' ? 'FULL-TIME' :
+        event.match.status === 'inprogress' ? 'LIVE' : 'UPCOMING';
+      const emoji = event.match.status === 'finished' ? '🏁' :
+        event.match.status === 'inprogress' ? '🔴' : '⏳';
+      return { text: status, emoji };
+    }
     default:
       return { text: 'UPDATE', emoji: 'ℹ️' };
   }
@@ -160,11 +168,14 @@ export async function generateScorecard(
     // Composite: SVG base + logos
     const composites: sharp.OverlayOptions[] = [];
 
+    // Center logos vertically with padding to prevent clipping
+    const logoTop = Math.max(LOGO_PADDING, Math.round((CARD_HEIGHT - LOGO_SIZE) / 2));
+
     if (homeLogo) {
       composites.push({
         input: homeLogo,
         left: 20,
-        top: Math.round((CARD_HEIGHT - LOGO_SIZE) / 2),
+        top: logoTop,
       });
     }
 
@@ -172,7 +183,7 @@ export async function generateScorecard(
       composites.push({
         input: awayLogo,
         left: CARD_WIDTH - LOGO_SIZE - 20,
-        top: Math.round((CARD_HEIGHT - LOGO_SIZE) / 2),
+        top: logoTop,
       });
     }
 

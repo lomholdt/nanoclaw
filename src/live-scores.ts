@@ -543,7 +543,14 @@ async function handleIncidentUpdate(
 
   // Incidents can be a single object or nested. Try to extract the type.
   // Common incident types: goal, yellowcard, redcard, substitution, corner, etc.
-  const incidents: Array<{ type?: string; player?: string; player_in?: string; player_out?: string; elapsed?: string; team?: string }> = [];
+  const incidents: Array<{
+    type?: string;
+    player?: string;
+    player_in?: string;
+    player_out?: string;
+    elapsed?: string;
+    team?: string;
+  }> = [];
 
   if (Array.isArray(message)) {
     incidents.push(...message);
@@ -554,8 +561,12 @@ async function handleIncidentUpdate(
   } else {
     // Try to find incidents in nested structure
     for (const val of Object.values(message)) {
-      if (typeof val === 'object' && val && ('type' in val || 'incident_type' in val)) {
-        incidents.push(val as typeof incidents[0]);
+      if (
+        typeof val === 'object' &&
+        val &&
+        ('type' in val || 'incident_type' in val)
+      ) {
+        incidents.push(val as (typeof incidents)[0]);
       }
     }
   }
@@ -563,19 +574,55 @@ async function handleIncidentUpdate(
   const events: MatchEvent[] = [];
 
   for (const inc of incidents) {
-    const incType = (inc.type || (inc as Record<string, unknown>).incident_type || '').toString().toLowerCase();
-    const player = inc.player || (inc as Record<string, unknown>).player_name || '';
-    const elapsed = inc.elapsed || (inc as Record<string, unknown>).elapsed_time || match.elapsedTime || '';
+    const incType = (
+      inc.type ||
+      (inc as Record<string, unknown>).incident_type ||
+      ''
+    )
+      .toString()
+      .toLowerCase();
+    const player =
+      inc.player || (inc as Record<string, unknown>).player_name || '';
+    const elapsed =
+      inc.elapsed ||
+      (inc as Record<string, unknown>).elapsed_time ||
+      match.elapsedTime ||
+      '';
 
     if (incType.includes('substitution') || incType.includes('sub')) {
-      const playerIn = inc.player_in || (inc as Record<string, unknown>).player_in_name || '';
-      const playerOut = inc.player_out || (inc as Record<string, unknown>).player_out_name || player;
-      const detail = playerIn && playerOut ? `${playerOut} ➡️ ${playerIn}` : playerOut || playerIn || '';
-      events.push({ type: 'substitution', eventId, match, detail: detail ? `${elapsed}' ${detail}` : '' });
+      const playerIn =
+        inc.player_in || (inc as Record<string, unknown>).player_in_name || '';
+      const playerOut =
+        inc.player_out ||
+        (inc as Record<string, unknown>).player_out_name ||
+        player;
+      const detail =
+        playerIn && playerOut
+          ? `${playerOut} ➡️ ${playerIn}`
+          : playerOut || playerIn || '';
+      events.push({
+        type: 'substitution',
+        eventId,
+        match,
+        detail: detail ? `${elapsed}' ${detail}` : '',
+      });
     } else if (incType.includes('redcard') || incType.includes('red_card')) {
-      events.push({ type: 'red_card', eventId, match, detail: player ? `${elapsed}' ${player}` : '' });
-    } else if (incType.includes('yellowcard') || incType.includes('yellow_card')) {
-      events.push({ type: 'yellow_card', eventId, match, detail: player ? `${elapsed}' ${player}` : '' });
+      events.push({
+        type: 'red_card',
+        eventId,
+        match,
+        detail: player ? `${elapsed}' ${player}` : '',
+      });
+    } else if (
+      incType.includes('yellowcard') ||
+      incType.includes('yellow_card')
+    ) {
+      events.push({
+        type: 'yellow_card',
+        eventId,
+        match,
+        detail: player ? `${elapsed}' ${player}` : '',
+      });
     }
     // Goals are handled via results_updates (score diff), skip here to avoid duplicates
   }

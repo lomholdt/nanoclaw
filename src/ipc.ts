@@ -768,17 +768,23 @@ export async function processTaskIpc(
             const allMatches = await fetchTodayScores();
             const matchState = allMatches.get(data.event_id!);
             if (!matchState) {
-              logger.warn({ eventId: data.event_id }, 'Match not found for scorecard');
+              logger.warn(
+                { eventId: data.event_id },
+                'Match not found for scorecard',
+              );
               return;
             }
             const event = {
-              type: (data.event_type || 'goal') as 'goal',
+              type: (data.event_type || 'live') as 'live',
               eventId: data.event_id!,
               match: matchState,
             };
             const buf = await generateScorecard(event);
             if (!buf) {
-              logger.warn({ eventId: data.event_id }, 'Scorecard generation failed');
+              logger.warn(
+                { eventId: data.event_id },
+                'Scorecard generation failed',
+              );
               return;
             }
             const attachments = [
@@ -791,9 +797,15 @@ export async function processTaskIpc(
             const { homeTeam: home, awayTeam: away } = matchState;
             const text = `${home.name} ${home.score}-${away.score} ${away.name}\n_${matchState.tournamentName}_`;
             await deps.sendMessage(data.chatJid!, text, attachments);
-            logger.info({ eventId: data.event_id, chatJid: data.chatJid }, 'Scorecard sent');
+            logger.info(
+              { eventId: data.event_id, chatJid: data.chatJid },
+              'Scorecard sent',
+            );
           } catch (err) {
-            logger.warn({ err, eventId: data.event_id }, 'Failed to send scorecard');
+            logger.warn(
+              { err, eventId: data.event_id },
+              'Failed to send scorecard',
+            );
           }
         })();
       }

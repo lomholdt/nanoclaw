@@ -789,9 +789,9 @@ server.tool(
       .string()
       .describe('The event ID from get_live_scores (e.g., "5205791")'),
     event_type: z
-      .enum(['goal', 'kickoff', 'halftime', 'fulltime', 'red_card', 'period_change'])
+      .enum(['live', 'goal', 'kickoff', 'halftime', 'fulltime', 'red_card', 'yellow_card', 'substitution', 'period_change'])
       .optional()
-      .describe('Type of event for the card label. Default: "goal"'),
+      .describe('Type of event for the card label. Default: "live" (shows current match status)'),
   },
   async (args) => {
     const data = {
