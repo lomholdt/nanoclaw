@@ -13,6 +13,7 @@ Track live football matches and get push notifications for goals, kick-off, half
 - `get_matches` — Get matches for any date (use YYYYMMDD format, e.g. "20260408")
 - `subscribe_live_score` — Subscribe to updates for a match (needs event_id from get_live_scores/get_matches)
 - `unsubscribe_live_score` — Stop receiving updates for a match
+- `get_match_details` — Get goal scorers, cards, and substitutions for a specific match
 - `send_scorecard` — Generate and send a scorecard image with team logos and current score
 
 ## Important: Only Subscribe to What Was Asked

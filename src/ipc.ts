@@ -759,6 +759,28 @@ export async function processTaskIpc(
       }
       break;
 
+    case 'get_match_details':
+      if (data.event_id) {
+        void (async () => {
+          try {
+            const { fetchMatchDetails } = await import('./live-scores.js');
+            const details = await fetchMatchDetails(data.event_id!);
+            if (!details) {
+              logger.warn({ eventId: data.event_id }, 'Match details not found');
+              return;
+            }
+            const ipcDir = path.join(DATA_DIR, 'ipc', sourceGroup);
+            fs.mkdirSync(ipcDir, { recursive: true });
+            const responseFile = path.join(ipcDir, `match_details_${data.event_id}.json`);
+            fs.writeFileSync(responseFile, JSON.stringify(details, null, 2));
+            logger.info({ eventId: data.event_id, sourceGroup }, 'Match details fetched');
+          } catch (err) {
+            logger.warn({ err, eventId: data.event_id }, 'Failed to fetch match details');
+          }
+        })();
+      }
+      break;
+
     case 'send_scorecard':
       if (data.event_id && data.chatJid) {
         void (async () => {

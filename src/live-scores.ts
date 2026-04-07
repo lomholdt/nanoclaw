@@ -296,6 +296,81 @@ export async function fetchMatchesForDate(
   return all;
 }
 
+/**
+ * Fetch match details including incidents (goals, cards, subs) for a specific event.
+ */
+export async function fetchMatchDetails(
+  eventId: string,
+  sportId: number = 1,
+): Promise<{
+  goals: Array<{ elapsed: string; player: string; assist: string; team: string }>;
+  cards: Array<{ elapsed: string; player: string; type: string; team: string }>;
+  substitutions: Array<{ elapsed: string; playerOut: string; playerIn: string; team: string }>;
+} | null> {
+  try {
+    const url = `https://es-ds.enetscores.com/11.231/${WIDGET_CODE}/live-da-event-incidents-${sportId}-${eventId}-t_g-id_type_event_info-theme_drdk_25-icf_all-clid_1708`;
+    const response = await fetch(url);
+    if (!response.ok) return null;
+
+    const json = (await response.json()) as { enc?: boolean; content?: string };
+    let data: Record<string, unknown>;
+    if (json.enc && json.content) {
+      data = JSON.parse(decryptContent(json.content));
+    } else {
+      data = json as Record<string, unknown>;
+    }
+
+    const goals: Array<{ elapsed: string; player: string; assist: string; team: string }> = [];
+    const cards: Array<{ elapsed: string; player: string; type: string; team: string }> = [];
+    const substitutions: Array<{ elapsed: string; playerOut: string; playerIn: string; team: string }> = [];
+
+    // Traverse the incident structure: data.data.{period}.i[] or data.{period}.i[]
+    const dataObj = (data as { data?: Record<string, unknown> }).data || data;
+    for (const periodVal of Object.values(dataObj)) {
+      if (typeof periodVal !== 'object' || !periodVal) continue;
+      const period = periodVal as { i?: Array<Record<string, unknown>> };
+      const incidentList = period.i;
+      if (!Array.isArray(incidentList)) continue;
+
+      for (const inc of incidentList) {
+        const ic = String(inc.ic || '').toLowerCase();
+        const elapsed = String(inc.elapsed || '');
+        const mainPar = inc.main_par as { pn?: string } | undefined;
+        const subPar = inc.sub_par as Array<{ pn?: string }> | undefined;
+        const team = String(inc.ptype || '');
+
+        if (ic === 'goal') {
+          goals.push({
+            elapsed,
+            player: mainPar?.pn || '?',
+            assist: subPar?.[0]?.pn || '',
+            team,
+          });
+        } else if (ic.includes('card')) {
+          cards.push({
+            elapsed,
+            player: mainPar?.pn || '?',
+            type: ic.includes('red') ? 'red' : 'yellow',
+            team,
+          });
+        } else if (ic === 'subst') {
+          substitutions.push({
+            elapsed,
+            playerOut: mainPar?.pn || '?',
+            playerIn: subPar?.[0]?.pn || '?',
+            team,
+          });
+        }
+      }
+    }
+
+    return { goals, cards, substitutions };
+  } catch (err) {
+    logger.warn({ err, eventId }, 'Failed to fetch match details');
+    return null;
+  }
+}
+
 // --- Match State Diffing ---
 
 function diffMatchStates(
@@ -395,16 +470,22 @@ function mqttTopicsForEvent(eventId: string): string[] {
 }
 
 function subscribeEventMqtt(eventId: string): void {
-  if (!mqttClient || !mqttConnected || mqttSubscribedEvents.has(eventId))
+  if (!mqttClient || !mqttConnected || mqttSubscribedEvents.has(eventId)) {
+    logger.debug(
+      { eventId, connected: mqttConnected, alreadySubscribed: mqttSubscribedEvents.has(eventId) },
+      'MQTT subscribe skipped',
+    );
     return;
+  }
 
   const topics = mqttTopicsForEvent(eventId);
+  logger.info({ eventId, topicCount: topics.length }, 'MQTT subscribing to event');
   for (const topic of topics) {
     mqttClient.subscribe(topic, (err) => {
       if (err) {
         logger.warn({ err, topic }, 'MQTT subscribe failed');
       } else {
-        logger.debug({ topic }, 'MQTT subscribed');
+        logger.info({ topic }, 'MQTT subscribed to topic');
       }
     });
   }
@@ -540,21 +621,23 @@ async function handleIncidentUpdate(
 
   // EnetScores incident format: { "{period}": { "i": { ic, elapsed, main_par, sub_par, ... } } }
   // Extract the incident object from the nested structure
-  let incident: {
+  interface IncidentData {
     ic?: string;
     elapsed?: string;
     main_par?: { pn?: string };
     sub_par?: Array<{ pn?: string }>;
-  } | null = null;
+  }
+
+  let incident: IncidentData | null = null;
 
   for (const periodVal of Object.values(message)) {
     if (typeof periodVal === 'object' && periodVal && 'i' in periodVal) {
-      incident = (periodVal as { i: typeof incident }).i;
+      incident = (periodVal as { i: IncidentData }).i;
       break;
     }
   }
 
-  if (!incident || !incident.ic) {
+  if (!incident?.ic) {
     logger.debug({ eventId, message }, 'Unrecognized incident format');
     return;
   }
@@ -568,9 +651,10 @@ async function handleIncidentUpdate(
 
   if (ic === 'subst' || ic.includes('substitution')) {
     // main_par = player out, sub_par[0] = player in
-    const detail = mainPlayer && subPlayer
-      ? `${mainPlayer} ➡️ ${subPlayer}`
-      : mainPlayer || subPlayer || '';
+    const detail =
+      mainPlayer && subPlayer
+        ? `${mainPlayer} ➡️ ${subPlayer}`
+        : mainPlayer || subPlayer || '';
     events.push({
       type: 'substitution',
       eventId,
@@ -599,7 +683,10 @@ async function handleIncidentUpdate(
       'Goal incident (scorer info)',
     );
   } else {
-    logger.debug({ eventId, ic, elapsed, mainPlayer }, 'Unhandled incident type');
+    logger.debug(
+      { eventId, ic, elapsed, mainPlayer },
+      'Unhandled incident type',
+    );
   }
 
   if (events.length > 0) {
@@ -790,6 +877,7 @@ function connectMqtt(): void {
 
     // Re-subscribe to all active events
     const eventIds = getSubscribedEventIds();
+    logger.info({ eventIds }, 'MQTT re-subscribing to active events');
     for (const eventId of eventIds) {
       mqttSubscribedEvents.delete(eventId); // Force re-subscribe
       subscribeEventMqtt(eventId);

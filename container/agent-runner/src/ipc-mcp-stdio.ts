@@ -782,6 +782,53 @@ server.tool(
 );
 
 server.tool(
+  'get_match_details',
+  'Get detailed match information including goal scorers, cards, and substitutions for a specific match.',
+  {
+    event_id: z
+      .string()
+      .describe('The event ID from get_live_scores (e.g., "5205791")'),
+  },
+  async (args) => {
+    const data = {
+      type: 'get_match_details',
+      event_id: args.event_id,
+      timestamp: new Date().toISOString(),
+    };
+    writeIpcFile(TASKS_DIR, data);
+
+    // Wait for the host to process and write response
+    const responseFile = path.join(IPC_DIR, `match_details_${args.event_id}.json`);
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    try {
+      if (fs.existsSync(responseFile)) {
+        const details = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(details, null, 2),
+            },
+          ],
+        };
+      }
+    } catch {
+      // Fall through
+    }
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Match details for ${args.event_id} are being fetched. Try again in a few seconds.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'send_scorecard',
   'Generate and send a scorecard image for a match. Shows team logos, score, and event type. Use after get_live_scores to get the event_id.',
   {
