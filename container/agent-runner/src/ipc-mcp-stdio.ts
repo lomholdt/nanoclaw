@@ -624,11 +624,13 @@ server.tool(
   {},
   async () => {
     const sports = [
-      { name: 'Football', id: 1, key: 'football' },
-      { name: 'Golf', id: 3, key: 'golf' },
-      { name: 'Ice Hockey', id: 5, key: 'hockey' },
-      { name: 'Handball', id: 20, key: 'handball' },
-      { name: 'Cycling', id: 30, key: 'cycling' },
+      { name: 'Football', id: 1, key: 'football', status: 'supported' },
+      { name: 'Golf', id: 3, key: 'golf', status: 'supported' },
+      { name: 'Ice Hockey', id: 5, key: 'hockey', status: 'supported' },
+      { name: 'Handball', id: 20, key: 'handball', status: 'supported' },
+      { name: 'Cycling', id: 30, key: 'cycling', status: 'supported' },
+      { name: 'Tennis', id: null, key: 'tennis', status: 'coming soon — different score format (sets/games)' },
+      { name: 'Badminton', id: null, key: 'badminton', status: 'coming soon — different score format (sets/points)' },
     ];
     return {
       content: [
