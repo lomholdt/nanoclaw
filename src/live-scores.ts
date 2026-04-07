@@ -11,12 +11,13 @@
 import { createDecipheriv, pbkdf2Sync, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { inflateRaw } from 'node:zlib';
+import { inflate, inflateRaw } from 'node:zlib';
 import { promisify } from 'node:util';
 
 import mqtt from 'mqtt';
 
 import { DATA_DIR } from './config.js';
+import { generateScorecard } from './scorecard.js';
 import {
   completeLiveScoreSubscriptionsForEvent,
   getActiveLiveScoreSubscriptions,
@@ -27,6 +28,7 @@ import { logger } from './logger.js';
 import type { LiveScoreSubscription, MatchEvent, MatchState } from './types.js';
 
 const inflateRawAsync = promisify(inflateRaw);
+const inflateAsync = promisify(inflate);
 
 // --- EnetScores config ---
 
@@ -52,7 +54,13 @@ export const SPORT_IDS: Record<string, number> = {
 };
 
 // Derive AES key once at module load
-const aesKey = pbkdf2Sync(ENET_PASSWORD, ENET_SALT, ENET_ITERATIONS, 32, 'sha256');
+const aesKey = pbkdf2Sync(
+  ENET_PASSWORD,
+  ENET_SALT,
+  ENET_ITERATIONS,
+  32,
+  'sha256',
+);
 
 // Polling interval for HTTP fallback when MQTT is disconnected
 const FALLBACK_POLL_INTERVAL = 30_000;
@@ -62,7 +70,11 @@ const PRE_KICKOFF_MS = 5 * 60 * 1000;
 // --- Types ---
 
 export interface LiveScoresDeps {
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: (
+    jid: string,
+    text: string,
+    attachments?: Array<{ contentType: string; filename: string; base64: string }>,
+  ) => Promise<void>;
 }
 
 // Raw event data from the EnetScores JSON
@@ -104,7 +116,8 @@ const mqttSubscribedEvents = new Set<string>();
 function decryptContent(encrypted: string): string {
   const raw = Buffer.from(encrypted, 'base64').toString('latin1');
   const colonPos = raw.lastIndexOf(':');
-  if (colonPos === -1) throw new Error('Invalid encrypted content: no IV separator');
+  if (colonPos === -1)
+    throw new Error('Invalid encrypted content: no IV separator');
 
   const ciphertextB64 = raw.slice(0, colonPos);
   const ivHex = raw.slice(colonPos + 1);
@@ -113,14 +126,20 @@ function decryptContent(encrypted: string): string {
   const iv = Buffer.from(ivHex, 'hex');
 
   const decipher = createDecipheriv('aes-256-cbc', aesKey, iv);
-  const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  const decrypted = Buffer.concat([
+    decipher.update(ciphertext),
+    decipher.final(),
+  ]);
   return decrypted.toString('utf-8');
 }
 
 // --- HTTP Data Fetching ---
 
 function buildDataUrl(sportId: number, date: string): string {
-  return DATA_URL_TEMPLATE.replace('{SID}', String(sportId)).replace('{DATE}', date);
+  return DATA_URL_TEMPLATE.replace('{SID}', String(sportId)).replace(
+    '{DATE}',
+    date,
+  );
 }
 
 function formatDate(d: Date): string {
@@ -131,8 +150,20 @@ function formatDate(d: Date): string {
 }
 
 function parseRawEvent(ev: RawEvent): MatchState {
-  const home = ev.par?.['1'] || { pi: '', pn: '?', pns: '?', frs: '0', rs1: '0' };
-  const away = ev.par?.['2'] || { pi: '', pn: '?', pns: '?', frs: '0', rs1: '0' };
+  const home = ev.par?.['1'] || {
+    pi: '',
+    pn: '?',
+    pns: '?',
+    frs: '0',
+    rs1: '0',
+  };
+  const away = ev.par?.['2'] || {
+    pi: '',
+    pn: '?',
+    pns: '?',
+    frs: '0',
+    rs1: '0',
+  };
   return {
     id: ev.id,
     status: ev.st || 'unknown',
@@ -178,7 +209,14 @@ export async function fetchMatchData(
     data?: any;
   };
 
-  let data: { data: { rows: Record<string, { events?: Record<string, Record<string, RawEvent>> }> } };
+  let data: {
+    data: {
+      rows: Record<
+        string,
+        { events?: Record<string, Record<string, RawEvent>> }
+      >;
+    };
+  };
   if (json.enc && json.content) {
     const decrypted = decryptContent(json.content);
     data = JSON.parse(decrypted);
@@ -197,7 +235,9 @@ export async function fetchMatchData(
       // Events are nested under the 'e' key: events.{group}.e.{event_id}
       const eventDict = (evGroup as Record<string, unknown>).e;
       if (!eventDict || typeof eventDict !== 'object') continue;
-      for (const [eid, ev] of Object.entries(eventDict as Record<string, unknown>)) {
+      for (const [eid, ev] of Object.entries(
+        eventDict as Record<string, unknown>,
+      )) {
         if (typeof ev !== 'object' || !ev || !('par' in ev)) continue;
         matches.set(eid, parseRawEvent(ev as RawEvent));
       }
@@ -241,7 +281,10 @@ export async function fetchMatchesForDate(
       const matches = await fetchMatchData(sid, date);
       for (const [id, state] of matches) all.set(id, state);
     } catch (err) {
-      logger.warn({ err, sportId: sid, date }, 'Failed to fetch sport data for date');
+      logger.warn(
+        { err, sportId: sid, date },
+        'Failed to fetch sport data for date',
+      );
     }
   });
 
@@ -269,7 +312,12 @@ function diffMatchStates(
   const prevTotal = prev.homeTeam.score + prev.awayTeam.score;
   const currTotal = curr.homeTeam.score + curr.awayTeam.score;
   if (currTotal > prevTotal) {
-    events.push({ type: 'goal', eventId: curr.id, match: curr, previousState: prev });
+    events.push({
+      type: 'goal',
+      eventId: curr.id,
+      match: curr,
+      previousState: prev,
+    });
   }
 
   // Status transitions
@@ -341,7 +389,8 @@ function mqttTopicsForEvent(eventId: string): string[] {
 }
 
 function subscribeEventMqtt(eventId: string): void {
-  if (!mqttClient || !mqttConnected || mqttSubscribedEvents.has(eventId)) return;
+  if (!mqttClient || !mqttConnected || mqttSubscribedEvents.has(eventId))
+    return;
 
   const topics = mqttTopicsForEvent(eventId);
   for (const topic of topics) {
@@ -366,14 +415,20 @@ function unsubscribeEventMqtt(eventId: string): void {
   mqttSubscribedEvents.delete(eventId);
 }
 
-async function handleMqttMessage(topic: string, payload: Buffer): Promise<void> {
+async function handleMqttMessage(
+  topic: string,
+  payload: Buffer,
+): Promise<void> {
   if (!serviceDeps) return;
 
   try {
     // Decompress payload (pako/zlib inflate)
     let jsonStr: string;
     try {
-      const decompressed = await inflateRawAsync(payload);
+      // Try zlib inflate first (with header), then raw deflate, then plain text
+      const decompressed = await inflateAsync(payload).catch(() =>
+        inflateRawAsync(payload),
+      );
       jsonStr = decompressed.toString('utf-8');
     } catch {
       // Might not be compressed
@@ -422,16 +477,28 @@ async function handleResultsUpdate(
     const homePar = message.par['1'] || message.par[1];
     const awayPar = message.par['2'] || message.par[2];
     if (homePar?.frs !== undefined) {
-      updated.homeTeam = { ...updated.homeTeam, score: parseInt(homePar.frs) || 0 };
+      updated.homeTeam = {
+        ...updated.homeTeam,
+        score: parseInt(homePar.frs) || 0,
+      };
     }
     if (awayPar?.frs !== undefined) {
-      updated.awayTeam = { ...updated.awayTeam, score: parseInt(awayPar.frs) || 0 };
+      updated.awayTeam = {
+        ...updated.awayTeam,
+        score: parseInt(awayPar.frs) || 0,
+      };
     }
     if (homePar?.rs1 !== undefined) {
-      updated.homeTeam = { ...updated.homeTeam, halfTimeScore: parseInt(homePar.rs1) || 0 };
+      updated.homeTeam = {
+        ...updated.homeTeam,
+        halfTimeScore: parseInt(homePar.rs1) || 0,
+      };
     }
     if (awayPar?.rs1 !== undefined) {
-      updated.awayTeam = { ...updated.awayTeam, halfTimeScore: parseInt(awayPar.rs1) || 0 };
+      updated.awayTeam = {
+        ...updated.awayTeam,
+        halfTimeScore: parseInt(awayPar.rs1) || 0,
+      };
     }
   }
 
@@ -466,11 +533,25 @@ async function notifySubscribers(
   const subscriptions = getSubscriptionsForEvent(eventId);
   for (const sub of subscriptions) {
     for (const event of events) {
-      const message = formatMatchEvent(event);
+      const text = formatMatchEvent(event);
       try {
-        await serviceDeps.sendMessage(sub.chat_jid, message);
+        // Generate scorecard image
+        const scorecardBuf = await generateScorecard(event);
+        const attachments = scorecardBuf
+          ? [
+              {
+                contentType: 'image/png',
+                filename: `scorecard-${eventId}.png`,
+                base64: scorecardBuf.toString('base64'),
+              },
+            ]
+          : undefined;
+        await serviceDeps.sendMessage(sub.chat_jid, text, attachments);
       } catch (err) {
-        logger.warn({ err, chatJid: sub.chat_jid, eventId }, 'Failed to send live score update');
+        logger.warn(
+          { err, chatJid: sub.chat_jid, eventId },
+          'Failed to send live score update',
+        );
       }
     }
   }
@@ -514,7 +595,10 @@ async function pollFallback(): Promise<void> {
 function startFallbackPolling(): void {
   if (fallbackInterval) return;
   logger.info('Starting HTTP fallback polling');
-  fallbackInterval = setInterval(() => void pollFallback(), FALLBACK_POLL_INTERVAL);
+  fallbackInterval = setInterval(
+    () => void pollFallback(),
+    FALLBACK_POLL_INTERVAL,
+  );
 }
 
 function stopFallbackPolling(): void {
@@ -589,9 +673,15 @@ async function activateSubscription(sub: LiveScoreSubscription): Promise<void> {
       await serviceDeps.sendMessage(sub.chat_jid, msg);
     }
 
-    logger.info({ eventId: sub.event_id, chatJid: sub.chat_jid }, 'Subscription activated');
+    logger.info(
+      { eventId: sub.event_id, chatJid: sub.chat_jid },
+      'Subscription activated',
+    );
   } catch (err) {
-    logger.error({ err, eventId: sub.event_id }, 'Failed to activate subscription');
+    logger.error(
+      { err, eventId: sub.event_id },
+      'Failed to activate subscription',
+    );
   }
 }
 
@@ -692,7 +782,10 @@ async function hydrateAndSubscribe(sub: LiveScoreSubscription): Promise<void> {
 
     subscribeEventMqtt(sub.event_id);
   } catch (err) {
-    logger.warn({ err, eventId: sub.event_id }, 'Failed to hydrate subscription');
+    logger.warn(
+      { err, eventId: sub.event_id },
+      'Failed to hydrate subscription',
+    );
   }
 }
 
