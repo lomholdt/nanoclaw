@@ -538,93 +538,68 @@ async function handleIncidentUpdate(
   const match = matchStateCache.get(eventId);
   if (!match) return;
 
-  // Log the raw incident for debugging
-  logger.info({ eventId, incident: message }, 'Incident update received');
-
-  // Incidents can be a single object or nested. Try to extract the type.
-  // Common incident types: goal, yellowcard, redcard, substitution, corner, etc.
-  const incidents: Array<{
-    type?: string;
-    player?: string;
-    player_in?: string;
-    player_out?: string;
+  // EnetScores incident format: { "{period}": { "i": { ic, elapsed, main_par, sub_par, ... } } }
+  // Extract the incident object from the nested structure
+  let incident: {
+    ic?: string;
     elapsed?: string;
-    team?: string;
-  }> = [];
+    main_par?: { pn?: string };
+    sub_par?: Array<{ pn?: string }>;
+  } | null = null;
 
-  if (Array.isArray(message)) {
-    incidents.push(...message);
-  } else if (message.incidents && Array.isArray(message.incidents)) {
-    incidents.push(...message.incidents);
-  } else if (message.type || message.incident_type) {
-    incidents.push(message);
-  } else {
-    // Try to find incidents in nested structure
-    for (const val of Object.values(message)) {
-      if (
-        typeof val === 'object' &&
-        val &&
-        ('type' in val || 'incident_type' in val)
-      ) {
-        incidents.push(val as (typeof incidents)[0]);
-      }
+  for (const periodVal of Object.values(message)) {
+    if (typeof periodVal === 'object' && periodVal && 'i' in periodVal) {
+      incident = (periodVal as { i: typeof incident }).i;
+      break;
     }
   }
 
+  if (!incident || !incident.ic) {
+    logger.debug({ eventId, message }, 'Unrecognized incident format');
+    return;
+  }
+
+  const ic = incident.ic.toLowerCase();
+  const elapsed = (incident.elapsed || '').replace("'", '');
+  const mainPlayer = incident.main_par?.pn || '';
+  const subPlayer = incident.sub_par?.[0]?.pn || '';
+
   const events: MatchEvent[] = [];
 
-  for (const inc of incidents) {
-    const incType = (
-      inc.type ||
-      (inc as Record<string, unknown>).incident_type ||
-      ''
-    )
-      .toString()
-      .toLowerCase();
-    const player =
-      inc.player || (inc as Record<string, unknown>).player_name || '';
-    const elapsed =
-      inc.elapsed ||
-      (inc as Record<string, unknown>).elapsed_time ||
-      match.elapsedTime ||
-      '';
-
-    if (incType.includes('substitution') || incType.includes('sub')) {
-      const playerIn =
-        inc.player_in || (inc as Record<string, unknown>).player_in_name || '';
-      const playerOut =
-        inc.player_out ||
-        (inc as Record<string, unknown>).player_out_name ||
-        player;
-      const detail =
-        playerIn && playerOut
-          ? `${playerOut} ➡️ ${playerIn}`
-          : playerOut || playerIn || '';
-      events.push({
-        type: 'substitution',
-        eventId,
-        match,
-        detail: detail ? `${elapsed}' ${detail}` : '',
-      });
-    } else if (incType.includes('redcard') || incType.includes('red_card')) {
-      events.push({
-        type: 'red_card',
-        eventId,
-        match,
-        detail: player ? `${elapsed}' ${player}` : '',
-      });
-    } else if (
-      incType.includes('yellowcard') ||
-      incType.includes('yellow_card')
-    ) {
-      events.push({
-        type: 'yellow_card',
-        eventId,
-        match,
-        detail: player ? `${elapsed}' ${player}` : '',
-      });
-    }
-    // Goals are handled via results_updates (score diff), skip here to avoid duplicates
+  if (ic === 'subst' || ic.includes('substitution')) {
+    // main_par = player out, sub_par[0] = player in
+    const detail = mainPlayer && subPlayer
+      ? `${mainPlayer} ➡️ ${subPlayer}`
+      : mainPlayer || subPlayer || '';
+    events.push({
+      type: 'substitution',
+      eventId,
+      match,
+      detail: detail ? `${elapsed}' ${detail}` : '',
+    });
+  } else if (ic === 'redcard' || ic.includes('red')) {
+    events.push({
+      type: 'red_card',
+      eventId,
+      match,
+      detail: mainPlayer ? `${elapsed}' ${mainPlayer}` : '',
+    });
+  } else if (ic === 'yellowcard' || ic.includes('yellow')) {
+    events.push({
+      type: 'yellow_card',
+      eventId,
+      match,
+      detail: mainPlayer ? `${elapsed}' ${mainPlayer}` : '',
+    });
+  } else if (ic === 'goal') {
+    // Goals are also handled via results_updates (score diff)
+    // but we can extract the scorer name from incidents
+    logger.info(
+      { eventId, scorer: mainPlayer, assist: subPlayer, elapsed },
+      'Goal incident (scorer info)',
+    );
+  } else {
+    logger.debug({ eventId, ic, elapsed, mainPlayer }, 'Unhandled incident type');
   }
 
   if (events.length > 0) {

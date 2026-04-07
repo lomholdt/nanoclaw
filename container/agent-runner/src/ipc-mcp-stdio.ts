@@ -797,7 +797,7 @@ server.tool(
     const data = {
       type: 'send_scorecard',
       event_id: args.event_id,
-      event_type: args.event_type || 'goal',
+      event_type: args.event_type || 'live',
       chatJid,
       timestamp: new Date().toISOString(),
     };
