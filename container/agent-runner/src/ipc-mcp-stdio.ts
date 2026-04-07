@@ -616,6 +616,171 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+// --- Live Scores Tools ---
+
+server.tool(
+  'get_live_scores',
+  "Get today's live football scores and match status. Returns all matches for today with scores, status (upcoming/live/finished), and tournament info.",
+  {},
+  async () => {
+    // Read the cached scores snapshot written by the host service
+    const scoresFile = path.join(IPC_DIR, 'live_scores.json');
+    try {
+      if (fs.existsSync(scoresFile)) {
+        const data = JSON.parse(fs.readFileSync(scoresFile, 'utf-8'));
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(data, null, 2),
+            },
+          ],
+        };
+      }
+    } catch {
+      // Fall through to not-available message
+    }
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Live scores data is not available yet. The live scores service may not be running.',
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'get_matches',
+  'Get football matches for a specific date. Use this to find matches for future subscriptions (e.g., tomorrow, next week).',
+  {
+    date: z
+      .string()
+      .describe(
+        'Date in YYYYMMDD format (e.g., "20260408" for April 8, 2026)',
+      ),
+  },
+  async (args) => {
+    // Write a request and read the response - the host will handle the HTTP fetch
+    // For simplicity, we fetch directly from the container
+    const data = {
+      type: 'get_matches',
+      date: args.date,
+      timestamp: new Date().toISOString(),
+    };
+    writeIpcFile(TASKS_DIR, data);
+
+    // Read the response file (host writes it after processing)
+    const responseFile = path.join(IPC_DIR, `matches_${args.date}.json`);
+
+    // Wait briefly for the host to process
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    try {
+      if (fs.existsSync(responseFile)) {
+        const matches = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(matches, null, 2),
+            },
+          ],
+        };
+      }
+    } catch {
+      // Fall through
+    }
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Matches for ${args.date} are being fetched. Try again in a few seconds, or check live_scores.json for today's matches.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'subscribe_live_score',
+  'Subscribe this group to live score updates for a football match. You will receive push notifications for goals, kick-off, half-time, and full-time. Use get_live_scores or get_matches first to find the event ID.',
+  {
+    event_id: z
+      .string()
+      .describe(
+        'The event ID from get_live_scores or get_matches (e.g., "5222358")',
+      ),
+    match_name: z
+      .string()
+      .optional()
+      .describe(
+        'Display name for the match (e.g., "FC Nordsjælland vs Brøndby IF")',
+      ),
+    scheduled_date: z
+      .string()
+      .optional()
+      .describe(
+        'Kickoff time for future matches in ISO format (e.g., "2026-04-08T20:00:00"). If omitted, assumes the match is today/live.',
+      ),
+  },
+  async (args) => {
+    const data = {
+      type: 'subscribe_live_score',
+      event_id: args.event_id,
+      match_name: args.match_name || null,
+      scheduled_date: args.scheduled_date || null,
+      targetJid: chatJid,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    const status = args.scheduled_date
+      ? `Subscription scheduled. You'll get a notification before kick-off.`
+      : `Subscribed! You'll receive live updates for this match.`;
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `${status}\nMatch: ${args.match_name || args.event_id}`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'unsubscribe_live_score',
+  'Unsubscribe from live score updates for a match.',
+  {
+    subscription_id: z
+      .string()
+      .describe('The subscription ID to cancel'),
+  },
+  async (args) => {
+    const data = {
+      type: 'unsubscribe_live_score',
+      subscription_id: args.subscription_id,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Unsubscribed from live score updates.',
+        },
+      ],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

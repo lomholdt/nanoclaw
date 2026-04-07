@@ -8,15 +8,18 @@ import { CronExpressionParser } from 'cron-parser';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import {
+  createLiveScoreSubscription,
   createTask,
+  deleteLiveScoreSubscription,
   deleteTask,
+  getLiveScoreSubscription,
   getMessageForReaction,
   getTaskById,
   updateTask,
 } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { Channel, RegisteredGroup } from './types.js';
+import { Channel, LiveScoreSubscription, RegisteredGroup } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -56,6 +59,8 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  onLiveScoreSubscribed?: (sub: LiveScoreSubscription) => void;
+  onLiveScoreUnsubscribed?: (eventId: string) => void;
 }
 
 let ipcWatcherRunning = false;
@@ -198,10 +203,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     'Unauthorized IPC reaction attempt blocked',
                   );
                 }
-              } else if (
-                data.type === 'pin_message' &&
-                data.chatJid
-              ) {
+              } else if (data.type === 'pin_message' && data.chatJid) {
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
@@ -217,9 +219,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       const duration = data.durationSeconds
                         ? parseInt(data.durationSeconds, 10)
                         : -1;
-                      await (
-                        channel as { pinMessage: Function }
-                      ).pinMessage(
+                      await (channel as { pinMessage: Function }).pinMessage(
                         data.chatJid,
                         msg.id,
                         msg.sender,
@@ -359,6 +359,12 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For live scores
+    event_id?: string;
+    match_name?: string;
+    scheduled_date?: string;
+    subscription_id?: string;
+    date?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -645,6 +651,108 @@ export async function processTaskIpc(
           { data },
           'Invalid register_group request - missing required fields',
         );
+      }
+      break;
+
+    case 'subscribe_live_score':
+      if (data.event_id && data.targetJid) {
+        const targetJid = data.targetJid as string;
+        const targetGroupEntry = registeredGroups[targetJid];
+
+        if (!targetGroupEntry) {
+          logger.warn(
+            { targetJid },
+            'Cannot subscribe live score: target group not registered',
+          );
+          break;
+        }
+
+        const targetFolder = targetGroupEntry.folder;
+        if (!isMain && targetFolder !== sourceGroup) {
+          logger.warn(
+            { sourceGroup, targetFolder },
+            'Unauthorized subscribe_live_score attempt blocked',
+          );
+          break;
+        }
+
+        const subId = `ls-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const status =
+          data.scheduled_date &&
+          new Date(data.scheduled_date).getTime() > Date.now() + 10 * 60 * 1000
+            ? 'scheduled'
+            : 'active';
+
+        const sub: LiveScoreSubscription = {
+          id: subId,
+          chat_jid: targetJid,
+          group_folder: targetFolder,
+          event_id: data.event_id,
+          match_name: (data.match_name as string) || null,
+          scheduled_date: (data.scheduled_date as string) || null,
+          status: status as 'active' | 'scheduled',
+          pinned_message_id: null,
+          created_at: new Date().toISOString(),
+          completed_at: null,
+        };
+
+        createLiveScoreSubscription(sub);
+        logger.info(
+          { subId, eventId: data.event_id, sourceGroup, targetFolder, status },
+          'Live score subscription created via IPC',
+        );
+        deps.onLiveScoreSubscribed?.(sub);
+      }
+      break;
+
+    case 'get_matches':
+      if (data.date) {
+        // Fetch matches for the given date and write response file
+        void (async () => {
+          try {
+            const { fetchMatchesForDate } = await import('./live-scores.js');
+            const matches = await fetchMatchesForDate(data.date as string);
+            const result = Array.from(matches.values()).map((m) => ({
+              id: m.id,
+              status: m.status,
+              statusName: m.statusName,
+              matchName: m.matchName,
+              tournament: m.tournamentName,
+              scheduledDate: m.scheduledDate,
+              home: { name: m.homeTeam.name, short: m.homeTeam.shortName, score: m.homeTeam.score },
+              away: { name: m.awayTeam.name, short: m.awayTeam.shortName, score: m.awayTeam.score },
+            }));
+            const ipcDir = path.join(DATA_DIR, 'ipc', sourceGroup);
+            const responseFile = path.join(ipcDir, `matches_${data.date}.json`);
+            fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
+            logger.info(
+              { date: data.date, count: result.length, sourceGroup },
+              'Matches fetched for date',
+            );
+          } catch (err) {
+            logger.warn({ err, date: data.date }, 'Failed to fetch matches for date');
+          }
+        })();
+      }
+      break;
+
+    case 'unsubscribe_live_score':
+      if (data.subscription_id) {
+        const sub = getLiveScoreSubscription(data.subscription_id);
+        if (sub && (isMain || sub.group_folder === sourceGroup)) {
+          const eventId = sub.event_id;
+          deleteLiveScoreSubscription(data.subscription_id);
+          logger.info(
+            { subscriptionId: data.subscription_id, sourceGroup },
+            'Live score subscription removed via IPC',
+          );
+          deps.onLiveScoreUnsubscribed?.(eventId);
+        } else {
+          logger.warn(
+            { subscriptionId: data.subscription_id, sourceGroup },
+            'Unauthorized live score unsubscribe attempt',
+          );
+        }
       }
       break;
 

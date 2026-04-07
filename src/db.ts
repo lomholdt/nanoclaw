@@ -6,6 +6,7 @@ import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  LiveScoreSubscription,
   NewMessage,
   RegisteredGroup,
   ScheduledTask,
@@ -113,6 +114,25 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add live_score_subscriptions table
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS live_score_subscriptions (
+      id TEXT PRIMARY KEY,
+      chat_jid TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      match_name TEXT,
+      scheduled_date TEXT,
+      status TEXT DEFAULT 'active',
+      pinned_message_id TEXT,
+      created_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ls_event ON live_score_subscriptions(event_id);
+    CREATE INDEX IF NOT EXISTS idx_ls_status ON live_score_subscriptions(status);
+    CREATE INDEX IF NOT EXISTS idx_ls_group ON live_score_subscriptions(group_folder);
+  `);
+
   // Add is_main column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(
@@ -149,15 +169,11 @@ function createSchema(database: Database.Database): void {
 
   // Add reply context columns if they don't exist (migration for existing DBs)
   try {
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT`,
-    );
+    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT`);
     database.exec(
       `ALTER TABLE messages ADD COLUMN reply_to_message_content TEXT`,
     );
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN reply_to_sender_name TEXT`,
-    );
+    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_sender_name TEXT`);
   } catch {
     /* columns already exist */
   }
@@ -725,6 +741,113 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Live score subscription accessors ---
+
+export function createLiveScoreSubscription(
+  sub: LiveScoreSubscription,
+): void {
+  db.prepare(
+    `INSERT INTO live_score_subscriptions (id, chat_jid, group_folder, event_id, match_name, scheduled_date, status, pinned_message_id, created_at, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    sub.id,
+    sub.chat_jid,
+    sub.group_folder,
+    sub.event_id,
+    sub.match_name,
+    sub.scheduled_date,
+    sub.status,
+    sub.pinned_message_id,
+    sub.created_at,
+    sub.completed_at,
+  );
+}
+
+export function getLiveScoreSubscription(
+  id: string,
+): LiveScoreSubscription | undefined {
+  return db
+    .prepare('SELECT * FROM live_score_subscriptions WHERE id = ?')
+    .get(id) as LiveScoreSubscription | undefined;
+}
+
+export function getActiveLiveScoreSubscriptions(): LiveScoreSubscription[] {
+  return db
+    .prepare(
+      `SELECT * FROM live_score_subscriptions WHERE status IN ('active', 'scheduled') ORDER BY created_at`,
+    )
+    .all() as LiveScoreSubscription[];
+}
+
+export function getLiveScoreSubscriptionsForGroup(
+  groupFolder: string,
+): LiveScoreSubscription[] {
+  return db
+    .prepare(
+      `SELECT * FROM live_score_subscriptions WHERE group_folder = ? AND status IN ('active', 'scheduled') ORDER BY created_at`,
+    )
+    .all(groupFolder) as LiveScoreSubscription[];
+}
+
+export function getSubscribedEventIds(): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT event_id FROM live_score_subscriptions WHERE status = 'active'`,
+    )
+    .all() as Array<{ event_id: string }>;
+  return rows.map((r) => r.event_id);
+}
+
+export function getSubscriptionsForEvent(
+  eventId: string,
+): LiveScoreSubscription[] {
+  return db
+    .prepare(
+      `SELECT * FROM live_score_subscriptions WHERE event_id = ? AND status = 'active'`,
+    )
+    .all(eventId) as LiveScoreSubscription[];
+}
+
+export function updateLiveScoreSubscription(
+  id: string,
+  updates: Partial<Pick<LiveScoreSubscription, 'status' | 'pinned_message_id'>>,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+    if (updates.status === 'completed') {
+      fields.push('completed_at = ?');
+      values.push(new Date().toISOString());
+    }
+  }
+  if (updates.pinned_message_id !== undefined) {
+    fields.push('pinned_message_id = ?');
+    values.push(updates.pinned_message_id);
+  }
+
+  if (fields.length === 0) return;
+  values.push(id);
+  db.prepare(
+    `UPDATE live_score_subscriptions SET ${fields.join(', ')} WHERE id = ?`,
+  ).run(...values);
+}
+
+export function deleteLiveScoreSubscription(id: string): void {
+  db.prepare('DELETE FROM live_score_subscriptions WHERE id = ?').run(id);
+}
+
+export function completeLiveScoreSubscriptionsForEvent(
+  eventId: string,
+): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE live_score_subscriptions SET status = 'completed', completed_at = ? WHERE event_id = ? AND status = 'active'`,
+  ).run(now, eventId);
 }
 
 // --- JSON migration ---

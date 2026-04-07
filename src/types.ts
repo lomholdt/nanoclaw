@@ -87,7 +87,16 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string, attachments?: Array<{ contentType: string; filename: string; base64: string }>, replyTo?: { messageId: string; author: string }): Promise<void>;
+  sendMessage(
+    jid: string,
+    text: string,
+    attachments?: Array<{
+      contentType: string;
+      filename: string;
+      base64: string;
+    }>,
+    replyTo?: { messageId: string; author: string },
+  ): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
@@ -96,7 +105,12 @@ export interface Channel {
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
   // Optional: emoji reaction. messageId is platform-specific; omit to react to latest.
-  sendReaction?(jid: string, emoji: string, messageId?: string, targetAuthor?: string): Promise<void>;
+  sendReaction?(
+    jid: string,
+    emoji: string,
+    messageId?: string,
+    targetAuthor?: string,
+  ): Promise<void>;
   // Optional: create a poll in the channel.
   sendPoll?(
     jid: string,
@@ -105,6 +119,55 @@ export interface Channel {
     durationHours: number,
     allowMultiselect: boolean,
   ): Promise<void>;
+}
+
+// --- Live scores ---
+
+export interface LiveScoreSubscription {
+  id: string;
+  chat_jid: string;
+  group_folder: string;
+  event_id: string;
+  match_name: string | null;
+  scheduled_date: string | null; // kickoff time for future matches
+  status: 'active' | 'scheduled' | 'completed' | 'error';
+  pinned_message_id: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface MatchState {
+  id: string;
+  status: string; // inprogress, finished, upcoming, halftime
+  statusName: string; // "1. halvleg"
+  statusNameShort: string; // "1H", "HT", "2H", "SLUT"
+  matchName: string; // "FC Nordsjaelland-Broendby IF"
+  tournamentName: string;
+  elapsedTime: string;
+  scheduledDate: string; // "2026-04-07 17:00:00"
+  homeTeam: TeamState;
+  awayTeam: TeamState;
+}
+
+export interface TeamState {
+  id: string;
+  name: string; // "FC Nordsjælland"
+  shortName: string; // "FCN"
+  score: number;
+  halfTimeScore: number;
+}
+
+export interface MatchEvent {
+  type:
+    | 'goal'
+    | 'kickoff'
+    | 'halftime'
+    | 'fulltime'
+    | 'red_card'
+    | 'period_change';
+  eventId: string;
+  match: MatchState;
+  previousState?: MatchState;
 }
 
 // Callback type that channels use to deliver inbound messages

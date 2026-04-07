@@ -14,6 +14,11 @@ import {
   POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
+import {
+  onSubscriptionCreated,
+  onSubscriptionRemoved,
+  startLiveScoresService,
+} from './live-scores.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -65,6 +70,7 @@ import {
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { parseImageReferences } from './image.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -253,6 +259,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
+  const imageAttachments = parseImageReferences(missedMessages);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -290,7 +297,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     ? { messageId: lastMsg.id, author: lastMsg.sender }
     : undefined;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, imageAttachments, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -349,6 +356,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  imageAttachments?: Array<{ relativePath: string; mediaType: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -401,6 +409,7 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        ...(imageAttachments && imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -780,6 +789,12 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    onLiveScoreSubscribed: (sub) => {
+      void onSubscriptionCreated(sub);
+    },
+    onLiveScoreUnsubscribed: (eventId) => {
+      onSubscriptionRemoved(eventId);
+    },
     onTasksChanged: () => {
       const tasks = getAllTasks();
       const taskRows = tasks.map((t) => ({
@@ -797,6 +812,19 @@ async function main(): Promise<void> {
       }
     },
   });
+  // Start live scores service (MQTT + HTTP for real-time match updates)
+  startLiveScoresService({
+    sendMessage: async (jid, rawText) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) {
+        logger.warn({ jid }, 'No channel owns JID, cannot send live score update');
+        return;
+      }
+      const text = formatOutbound(rawText, channel.name as ChannelType);
+      if (text) await channel.sendMessage(jid, text);
+    },
+  });
+
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
