@@ -303,9 +303,19 @@ export async function fetchMatchDetails(
   eventId: string,
   sportId: number = 1,
 ): Promise<{
-  goals: Array<{ elapsed: string; player: string; assist: string; team: string }>;
+  goals: Array<{
+    elapsed: string;
+    player: string;
+    assist: string;
+    team: string;
+  }>;
   cards: Array<{ elapsed: string; player: string; type: string; team: string }>;
-  substitutions: Array<{ elapsed: string; playerOut: string; playerIn: string; team: string }>;
+  substitutions: Array<{
+    elapsed: string;
+    playerOut: string;
+    playerIn: string;
+    team: string;
+  }>;
 } | null> {
   try {
     const url = `https://es-ds.enetscores.com/11.231/${WIDGET_CODE}/live-da-event-incidents-${sportId}-${eventId}-t_g-id_type_event_info-theme_drdk_25-icf_all-clid_1708`;
@@ -320,9 +330,24 @@ export async function fetchMatchDetails(
       data = json as Record<string, unknown>;
     }
 
-    const goals: Array<{ elapsed: string; player: string; assist: string; team: string }> = [];
-    const cards: Array<{ elapsed: string; player: string; type: string; team: string }> = [];
-    const substitutions: Array<{ elapsed: string; playerOut: string; playerIn: string; team: string }> = [];
+    const goals: Array<{
+      elapsed: string;
+      player: string;
+      assist: string;
+      team: string;
+    }> = [];
+    const cards: Array<{
+      elapsed: string;
+      player: string;
+      type: string;
+      team: string;
+    }> = [];
+    const substitutions: Array<{
+      elapsed: string;
+      playerOut: string;
+      playerIn: string;
+      team: string;
+    }> = [];
 
     // Traverse the incident structure: data.data.{period}.i[] or data.{period}.i[]
     const dataObj = (data as { data?: Record<string, unknown> }).data || data;
@@ -433,11 +458,16 @@ function formatMatchEvent(event: MatchEvent): string {
 
   switch (event.type) {
     case 'goal': {
-      // Determine who scored
-      const prevHome = event.previousState?.homeTeam.score ?? 0;
-      const scorer = home.score > prevHome ? home.name : away.name;
-      const elapsed = m.elapsedTime ? ` ${m.elapsedTime}'` : '';
-      return `⚽ *GOAL!* ${scorer}${elapsed}\n${home.name} ${score} ${away.name}\n_${m.tournamentName}_`;
+      // Use detail (from incident) if available, otherwise determine from score diff
+      const goalInfo = event.detail
+        ? event.detail
+        : (() => {
+            const prevHome = event.previousState?.homeTeam.score ?? 0;
+            const scorer = home.score > prevHome ? home.name : away.name;
+            const elapsed = m.elapsedTime ? `${m.elapsedTime}' ${scorer}` : scorer;
+            return elapsed;
+          })();
+      return `⚽ *GOAL!* ${goalInfo}\n${home.name} ${score} ${away.name}\n_${m.tournamentName}_`;
     }
     case 'kickoff':
       return `🟢 *Kick-off!*\n${home.name} vs ${away.name}\n_${m.tournamentName}_`;
@@ -472,14 +502,21 @@ function mqttTopicsForEvent(eventId: string): string[] {
 function subscribeEventMqtt(eventId: string): void {
   if (!mqttClient || !mqttConnected || mqttSubscribedEvents.has(eventId)) {
     logger.debug(
-      { eventId, connected: mqttConnected, alreadySubscribed: mqttSubscribedEvents.has(eventId) },
+      {
+        eventId,
+        connected: mqttConnected,
+        alreadySubscribed: mqttSubscribedEvents.has(eventId),
+      },
       'MQTT subscribe skipped',
     );
     return;
   }
 
   const topics = mqttTopicsForEvent(eventId);
-  logger.info({ eventId, topicCount: topics.length }, 'MQTT subscribing to event');
+  logger.info(
+    { eventId, topicCount: topics.length },
+    'MQTT subscribing to event',
+  );
   for (const topic of topics) {
     mqttClient.subscribe(topic, (err) => {
       if (err) {
@@ -676,14 +713,30 @@ async function handleIncidentUpdate(
       detail: mainPlayer ? `${elapsed}' ${mainPlayer}` : '',
     });
   } else if (ic === 'goal') {
-    // Goals are also handled via results_updates (score diff)
-    // but we can extract the scorer name from incidents
-    logger.info(
-      { eventId, scorer: mainPlayer, assist: subPlayer, elapsed },
-      'Goal incident (scorer info)',
-    );
+    const prev = matchStateCache.get(eventId);
+    if (prev) {
+      const updated = { ...prev, elapsedTime: elapsed };
+      const res = (incident as Record<string, unknown>).res as
+        | { home?: number; away?: number }
+        | undefined;
+      if (res) {
+        updated.homeTeam = { ...updated.homeTeam, score: res.home ?? updated.homeTeam.score };
+        updated.awayTeam = { ...updated.awayTeam, score: res.away ?? updated.awayTeam.score };
+      }
+      matchStateCache.set(eventId, updated);
+
+      const assistText = subPlayer ? ` (${subPlayer})` : '';
+      events.push({
+        type: 'goal',
+        eventId,
+        match: updated,
+        previousState: prev,
+        detail: `${elapsed}' ${mainPlayer}${assistText}`,
+      });
+    }
   } else {
-    logger.debug(
+    // Log unhandled types so we can add them later
+    logger.info(
       { eventId, ic, elapsed, mainPlayer },
       'Unhandled incident type',
     );
