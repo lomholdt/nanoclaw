@@ -46,4 +46,4 @@ If the user wants multiple matches, they will ask explicitly (e.g., "follow all 
 - For future matches, the system will notify the group 5 minutes before kick-off
 - After subscribing, pin a status message so the group can see what's being tracked
 - Scorecard images include team logos fetched from EnetScores
-- The system supports football. Other sports (handball, hockey, etc.) may be added later.
+- The system supports football, tennis, handball, ice hockey, golf, and cycling.

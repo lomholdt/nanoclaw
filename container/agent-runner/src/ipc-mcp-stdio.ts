@@ -629,7 +629,7 @@ server.tool(
       { name: 'Ice Hockey', id: 5, key: 'hockey', status: 'supported' },
       { name: 'Handball', id: 20, key: 'handball', status: 'supported' },
       { name: 'Cycling', id: 30, key: 'cycling', status: 'supported' },
-      { name: 'Tennis', id: null, key: 'tennis', status: 'coming soon — different score format (sets/games)' },
+      { name: 'Tennis', id: 2, key: 'tennis', status: 'supported' },
       { name: 'Badminton', id: null, key: 'badminton', status: 'coming soon — different score format (sets/points)' },
     ];
     return {
