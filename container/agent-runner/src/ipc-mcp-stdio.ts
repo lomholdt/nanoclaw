@@ -625,12 +625,24 @@ server.tool(
   async () => {
     const sports = [
       { name: 'Football', id: 1, key: 'football', status: 'supported' },
+      { name: 'Tennis', id: 2, key: 'tennis', status: 'supported' },
       { name: 'Golf', id: 3, key: 'golf', status: 'supported' },
       { name: 'Ice Hockey', id: 5, key: 'hockey', status: 'supported' },
       { name: 'Handball', id: 20, key: 'handball', status: 'supported' },
+      { name: 'Basketball', id: 23, key: 'basketball', status: 'supported' },
+      { name: 'Baseball', id: 26, key: 'baseball', status: 'supported' },
       { name: 'Cycling', id: 30, key: 'cycling', status: 'supported' },
-      { name: 'Tennis', id: 2, key: 'tennis', status: 'supported' },
-      { name: 'Badminton', id: null, key: 'badminton', status: 'coming soon — different score format (sets/points)' },
+      { name: 'Badminton', id: 33, key: 'badminton', status: 'supported' },
+      { name: 'Table Tennis', id: 34, key: 'table_tennis', status: 'supported' },
+      { name: 'Volleyball', id: 51, key: 'volleyball', status: 'coming soon' },
+      { name: 'Cricket', id: 73, key: 'cricket', status: 'coming soon' },
+      { name: 'Darts', id: 77, key: 'darts', status: 'coming soon' },
+      { name: 'Squash', id: 82, key: 'squash', status: 'coming soon' },
+      { name: 'Horse Racing', id: 31, key: 'horse_racing', status: 'coming soon' },
+      { name: 'Esports (LoL)', id: 79, key: 'esports_lol', status: 'coming soon' },
+      { name: 'Esports (CS2)', id: 84, key: 'esports_cs2', status: 'coming soon' },
+      { name: 'Esports (Dota 2)', id: 85, key: 'esports_dota2', status: 'coming soon' },
+      { name: 'Esports (FIFA/FC)', id: 91, key: 'esports_fc', status: 'coming soon' },
     ];
     return {
       content: [
@@ -648,7 +660,7 @@ server.tool(
   "Get today's live sports scores and match status. Returns all matches for today with scores, status (upcoming/live/finished), and tournament info. Supports football, tennis, handball, hockey, golf, and cycling.",
   {
     sport: z
-      .enum(['all', 'football', 'tennis', 'golf', 'hockey', 'handball', 'cycling'])
+      .enum(['all', 'football', 'tennis', 'golf', 'hockey', 'handball', 'basketball', 'baseball', 'cycling', 'badminton', 'table_tennis'])
       .optional()
       .describe('Filter by sport. Default: "all"'),
   },

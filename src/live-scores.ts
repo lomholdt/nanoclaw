@@ -56,7 +56,11 @@ export const SPORT_IDS: Record<string, number> = {
   golf: 3,
   hockey: 5,
   handball: 20,
+  basketball: 23,
+  baseball: 26,
   cycling: 30,
+  badminton: 33,
+  table_tennis: 34,
 };
 
 // Derive AES key once at module load
@@ -393,7 +397,10 @@ export async function fetchMatchDetails(
 
     // Traverse the incident structure: data.i.periods.{period}.i[]
     const iObj = (data as { i?: { periods?: Record<string, unknown> } }).i;
-    const periods = iObj?.periods || (data as { data?: Record<string, unknown> }).data || data;
+    const periods =
+      iObj?.periods ||
+      (data as { data?: Record<string, unknown> }).data ||
+      data;
     for (const periodVal of Object.values(periods)) {
       if (typeof periodVal !== 'object' || !periodVal) continue;
       const period = periodVal as { i?: Array<Record<string, unknown>> };
@@ -416,7 +423,10 @@ export async function fetchMatchDetails(
             player: mainPar?.pn || '?',
             assist: subPar?.[0]?.pn || '',
             team,
-            ...(cancelled && { cancelled: true, reason: String(inc.reason || 'VAR') }),
+            ...(cancelled && {
+              cancelled: true,
+              reason: String(inc.reason || 'VAR'),
+            }),
           });
         } else if (ic.includes('card')) {
           cards.push({
