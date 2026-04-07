@@ -123,6 +123,7 @@ function createSchema(database: Database.Database): void {
       event_id TEXT NOT NULL,
       match_name TEXT,
       scheduled_date TEXT,
+      notification_level TEXT DEFAULT 'all',
       status TEXT DEFAULT 'active',
       pinned_message_id TEXT,
       created_at TEXT NOT NULL,
@@ -132,6 +133,15 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_ls_status ON live_score_subscriptions(status);
     CREATE INDEX IF NOT EXISTS idx_ls_group ON live_score_subscriptions(group_folder);
   `);
+
+  // Add notification_level column to live_score_subscriptions if missing
+  try {
+    database.exec(
+      `ALTER TABLE live_score_subscriptions ADD COLUMN notification_level TEXT DEFAULT 'all'`,
+    );
+  } catch {
+    /* column already exists */
+  }
 
   // Add is_main column if it doesn't exist (migration for existing DBs)
   try {
@@ -745,12 +755,10 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
 
 // --- Live score subscription accessors ---
 
-export function createLiveScoreSubscription(
-  sub: LiveScoreSubscription,
-): void {
+export function createLiveScoreSubscription(sub: LiveScoreSubscription): void {
   db.prepare(
-    `INSERT INTO live_score_subscriptions (id, chat_jid, group_folder, event_id, match_name, scheduled_date, status, pinned_message_id, created_at, completed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO live_score_subscriptions (id, chat_jid, group_folder, event_id, match_name, scheduled_date, notification_level, status, pinned_message_id, created_at, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     sub.id,
     sub.chat_jid,
@@ -758,6 +766,7 @@ export function createLiveScoreSubscription(
     sub.event_id,
     sub.match_name,
     sub.scheduled_date,
+    sub.notification_level || 'all',
     sub.status,
     sub.pinned_message_id,
     sub.created_at,
@@ -841,9 +850,7 @@ export function deleteLiveScoreSubscription(id: string): void {
   db.prepare('DELETE FROM live_score_subscriptions WHERE id = ?').run(id);
 }
 
-export function completeLiveScoreSubscriptionsForEvent(
-  eventId: string,
-): void {
+export function completeLiveScoreSubscriptionsForEvent(eventId: string): void {
   const now = new Date().toISOString();
   db.prepare(
     `UPDATE live_score_subscriptions SET status = 'completed', completed_at = ? WHERE event_id = ? AND status = 'active'`,

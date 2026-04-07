@@ -748,6 +748,12 @@ server.tool(
       .describe(
         'Kickoff time for future matches in ISO format (e.g., "2026-04-08T20:00:00"). If omitted, assumes the match is today/live.',
       ),
+    notification_level: z
+      .enum(['goals', 'key', 'all'])
+      .optional()
+      .describe(
+        'What to notify about. "goals" = goals + kick-off/half-time/full-time only. "key" = also cards. "all" = everything including substitutions. Default: "all"',
+      ),
   },
   async (args) => {
     const data = {
@@ -755,6 +761,7 @@ server.tool(
       event_id: args.event_id,
       match_name: args.match_name || null,
       scheduled_date: args.scheduled_date || null,
+      notification_level: args.notification_level || 'all',
       targetJid: chatJid,
       timestamp: new Date().toISOString(),
     };

@@ -367,6 +367,7 @@ export async function processTaskIpc(
     subscription_id?: string;
     date?: string;
     event_type?: string;
+    notification_level?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -702,6 +703,7 @@ export async function processTaskIpc(
           event_id: data.event_id,
           match_name: (data.match_name as string) || null,
           scheduled_date: (data.scheduled_date as string) || null,
+          notification_level: (data.notification_level as 'goals' | 'key' | 'all') || 'all',
           status: status as 'active' | 'scheduled',
           pinned_message_id: null,
           created_at: new Date().toISOString(),
@@ -766,16 +768,28 @@ export async function processTaskIpc(
             const { fetchMatchDetails } = await import('./live-scores.js');
             const details = await fetchMatchDetails(data.event_id!);
             if (!details) {
-              logger.warn({ eventId: data.event_id }, 'Match details not found');
+              logger.warn(
+                { eventId: data.event_id },
+                'Match details not found',
+              );
               return;
             }
             const ipcDir = path.join(DATA_DIR, 'ipc', sourceGroup);
             fs.mkdirSync(ipcDir, { recursive: true });
-            const responseFile = path.join(ipcDir, `match_details_${data.event_id}.json`);
+            const responseFile = path.join(
+              ipcDir,
+              `match_details_${data.event_id}.json`,
+            );
             fs.writeFileSync(responseFile, JSON.stringify(details, null, 2));
-            logger.info({ eventId: data.event_id, sourceGroup }, 'Match details fetched');
+            logger.info(
+              { eventId: data.event_id, sourceGroup },
+              'Match details fetched',
+            );
           } catch (err) {
-            logger.warn({ err, eventId: data.event_id }, 'Failed to fetch match details');
+            logger.warn(
+              { err, eventId: data.event_id },
+              'Failed to fetch match details',
+            );
           }
         })();
       }

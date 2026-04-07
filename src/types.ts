@@ -123,6 +123,14 @@ export interface Channel {
 
 // --- Live scores ---
 
+/**
+ * Notification levels for live score subscriptions:
+ * - goals: Goals + kick-off + half-time + full-time only
+ * - key: Goals + cards + kick-off + half-time + full-time
+ * - all: Everything including substitutions
+ */
+export type NotificationLevel = 'goals' | 'key' | 'all';
+
 export interface LiveScoreSubscription {
   id: string;
   chat_jid: string;
@@ -130,6 +138,7 @@ export interface LiveScoreSubscription {
   event_id: string;
   match_name: string | null;
   scheduled_date: string | null; // kickoff time for future matches
+  notification_level: NotificationLevel;
   status: 'active' | 'scheduled' | 'completed' | 'error';
   pinned_message_id: string | null;
   created_at: string;

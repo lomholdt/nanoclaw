@@ -464,7 +464,9 @@ function formatMatchEvent(event: MatchEvent): string {
         : (() => {
             const prevHome = event.previousState?.homeTeam.score ?? 0;
             const scorer = home.score > prevHome ? home.name : away.name;
-            const elapsed = m.elapsedTime ? `${m.elapsedTime}' ${scorer}` : scorer;
+            const elapsed = m.elapsedTime
+              ? `${m.elapsedTime}' ${scorer}`
+              : scorer;
             return elapsed;
           })();
       return `⚽ *GOAL!* ${goalInfo}\n${home.name} ${score} ${away.name}\n_${m.tournamentName}_`;
@@ -720,8 +722,14 @@ async function handleIncidentUpdate(
         | { home?: number; away?: number }
         | undefined;
       if (res) {
-        updated.homeTeam = { ...updated.homeTeam, score: res.home ?? updated.homeTeam.score };
-        updated.awayTeam = { ...updated.awayTeam, score: res.away ?? updated.awayTeam.score };
+        updated.homeTeam = {
+          ...updated.homeTeam,
+          score: res.home ?? updated.homeTeam.score,
+        };
+        updated.awayTeam = {
+          ...updated.awayTeam,
+          score: res.away ?? updated.awayTeam.score,
+        };
       }
       matchStateCache.set(eventId, updated);
 
@@ -756,6 +764,13 @@ async function notifySubscribers(
   const subscriptions = getSubscriptionsForEvent(eventId);
   for (const sub of subscriptions) {
     for (const event of events) {
+      // Filter by notification level
+      const level = sub.notification_level || 'all';
+      const alwaysShow = ['goal', 'kickoff', 'halftime', 'fulltime'];
+      const keyEvents = [...alwaysShow, 'red_card', 'yellow_card'];
+      if (level === 'goals' && !alwaysShow.includes(event.type)) continue;
+      if (level === 'key' && !keyEvents.includes(event.type)) continue;
+
       const text = formatMatchEvent(event);
       try {
         // Generate scorecard image
