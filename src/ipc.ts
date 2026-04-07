@@ -6,6 +6,23 @@ import { promisify } from 'util';
 import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+
+function toLocalTime(utcDateStr: string): string {
+  if (!utcDateStr) return '';
+  try {
+    const d = new Date(utcDateStr + 'Z'); // Treat as UTC
+    return d.toLocaleString('da-DK', {
+      timeZone: TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return utcDateStr;
+  }
+}
 import { AvailableGroup } from './container-runner.js';
 import {
   createLiveScoreSubscription,
@@ -734,7 +751,7 @@ export async function processTaskIpc(
               statusName: m.statusName,
               matchName: m.matchName,
               tournament: m.tournamentName,
-              scheduledDate: m.scheduledDate,
+              scheduledDate: toLocalTime(m.scheduledDate),
               home: {
                 name: m.homeTeam.name,
                 short: m.homeTeam.shortName,
