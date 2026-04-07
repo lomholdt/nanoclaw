@@ -82,6 +82,10 @@ function eventLabel(event: MatchEvent): { text: string; emoji: string } {
       return { text: 'FULL-TIME', emoji: '🏁' };
     case 'red_card':
       return { text: 'RED CARD', emoji: '🟥' };
+    case 'yellow_card':
+      return { text: 'YELLOW CARD', emoji: '🟨' };
+    case 'substitution':
+      return { text: 'SUBSTITUTION', emoji: '🔄' };
     case 'period_change':
       return { text: event.match.statusName.toUpperCase(), emoji: '▶️' };
     default:

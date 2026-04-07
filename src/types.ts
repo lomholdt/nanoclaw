@@ -164,10 +164,13 @@ export interface MatchEvent {
     | 'halftime'
     | 'fulltime'
     | 'red_card'
+    | 'yellow_card'
+    | 'substitution'
     | 'period_change';
   eventId: string;
   match: MatchState;
   previousState?: MatchState;
+  detail?: string; // player name, card reason, etc.
 }
 
 // Callback type that channels use to deliver inbound messages

@@ -73,7 +73,11 @@ export interface LiveScoresDeps {
   sendMessage: (
     jid: string,
     text: string,
-    attachments?: Array<{ contentType: string; filename: string; base64: string }>,
+    attachments?: Array<{
+      contentType: string;
+      filename: string;
+      base64: string;
+    }>,
   ) => Promise<void>;
 }
 
@@ -366,10 +370,12 @@ function formatMatchEvent(event: MatchEvent): string {
       return `⏸️ *Half-time*\n${home.name} ${score} ${away.name}\n_${m.tournamentName}_`;
     case 'fulltime':
       return `🏁 *Full-time*\n${home.name} ${score} ${away.name}\n_${m.tournamentName}_`;
-    case 'red_card': {
-      const elapsed = m.elapsedTime ? ` ${m.elapsedTime}'` : '';
-      return `🟥 *Red card!*${elapsed}\n${home.name} ${score} ${away.name}`;
-    }
+    case 'red_card':
+      return `🟥 *Red card!* ${event.detail || ''}\n${home.name} ${score} ${away.name}`;
+    case 'yellow_card':
+      return `🟨 *Yellow card* ${event.detail || ''}\n${home.name} ${score} ${away.name}`;
+    case 'substitution':
+      return `🔄 *Substitution* ${event.detail || ''}\n${home.name} ${score} ${away.name}`;
     case 'period_change':
       return `▶️ *${m.statusName}*\n${home.name} ${score} ${away.name}`;
     default:
@@ -447,9 +453,7 @@ async function handleMqttMessage(
     if (topic.startsWith('results_updates/')) {
       await handleResultsUpdate(eventId, message);
     } else if (topic.startsWith('incidents_updates/')) {
-      // Incidents can contain goal details, cards, etc.
-      // For now we rely on results_updates for score changes
-      logger.debug({ eventId, topic }, 'Incident update received');
+      await handleIncidentUpdate(eventId, message);
     }
   } catch (err) {
     logger.warn({ err, topic }, 'Error processing MQTT message');
@@ -521,6 +525,63 @@ async function handleResultsUpdate(
     unsubscribeEventMqtt(eventId);
     matchStateCache.delete(eventId);
     logger.info({ eventId }, 'Match finished, subscription completed');
+  }
+}
+
+async function handleIncidentUpdate(
+  eventId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  message: any,
+): Promise<void> {
+  if (!serviceDeps) return;
+
+  const match = matchStateCache.get(eventId);
+  if (!match) return;
+
+  // Log the raw incident for debugging
+  logger.info({ eventId, incident: message }, 'Incident update received');
+
+  // Incidents can be a single object or nested. Try to extract the type.
+  // Common incident types: goal, yellowcard, redcard, substitution, corner, etc.
+  const incidents: Array<{ type?: string; player?: string; player_in?: string; player_out?: string; elapsed?: string; team?: string }> = [];
+
+  if (Array.isArray(message)) {
+    incidents.push(...message);
+  } else if (message.incidents && Array.isArray(message.incidents)) {
+    incidents.push(...message.incidents);
+  } else if (message.type || message.incident_type) {
+    incidents.push(message);
+  } else {
+    // Try to find incidents in nested structure
+    for (const val of Object.values(message)) {
+      if (typeof val === 'object' && val && ('type' in val || 'incident_type' in val)) {
+        incidents.push(val as typeof incidents[0]);
+      }
+    }
+  }
+
+  const events: MatchEvent[] = [];
+
+  for (const inc of incidents) {
+    const incType = (inc.type || (inc as Record<string, unknown>).incident_type || '').toString().toLowerCase();
+    const player = inc.player || (inc as Record<string, unknown>).player_name || '';
+    const elapsed = inc.elapsed || (inc as Record<string, unknown>).elapsed_time || match.elapsedTime || '';
+
+    if (incType.includes('substitution') || incType.includes('sub')) {
+      const playerIn = inc.player_in || (inc as Record<string, unknown>).player_in_name || '';
+      const playerOut = inc.player_out || (inc as Record<string, unknown>).player_out_name || player;
+      const detail = playerIn && playerOut ? `${playerOut} ➡️ ${playerIn}` : playerOut || playerIn || '';
+      events.push({ type: 'substitution', eventId, match, detail: detail ? `${elapsed}' ${detail}` : '' });
+    } else if (incType.includes('redcard') || incType.includes('red_card')) {
+      events.push({ type: 'red_card', eventId, match, detail: player ? `${elapsed}' ${player}` : '' });
+    } else if (incType.includes('yellowcard') || incType.includes('yellow_card')) {
+      events.push({ type: 'yellow_card', eventId, match, detail: player ? `${elapsed}' ${player}` : '' });
+    }
+    // Goals are handled via results_updates (score diff), skip here to avoid duplicates
+  }
+
+  if (events.length > 0) {
+    await notifySubscribers(eventId, events);
   }
 }
 
