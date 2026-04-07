@@ -703,7 +703,8 @@ export async function processTaskIpc(
           event_id: data.event_id,
           match_name: (data.match_name as string) || null,
           scheduled_date: (data.scheduled_date as string) || null,
-          notification_level: (data.notification_level as 'goals' | 'key' | 'all') || 'all',
+          notification_level:
+            (data.notification_level as 'goals' | 'key' | 'all') || 'all',
           status: status as 'active' | 'scheduled',
           pinned_message_id: null,
           created_at: new Date().toISOString(),
@@ -728,6 +729,7 @@ export async function processTaskIpc(
             const matches = await fetchMatchesForDate(data.date as string);
             const result = Array.from(matches.values()).map((m) => ({
               id: m.id,
+              sportId: m.sportId,
               status: m.status,
               statusName: m.statusName,
               matchName: m.matchName,
@@ -737,11 +739,21 @@ export async function processTaskIpc(
                 name: m.homeTeam.name,
                 short: m.homeTeam.shortName,
                 score: m.homeTeam.score,
+                ...(m.homeTeam.setScores && {
+                  setScores: m.homeTeam.setScores,
+                  gameScore: m.homeTeam.gameScore,
+                  serving: m.homeTeam.serving,
+                }),
               },
               away: {
                 name: m.awayTeam.name,
                 short: m.awayTeam.shortName,
                 score: m.awayTeam.score,
+                ...(m.awayTeam.setScores && {
+                  setScores: m.awayTeam.setScores,
+                  gameScore: m.awayTeam.gameScore,
+                  serving: m.awayTeam.serving,
+                }),
               },
             }));
             const ipcDir = path.join(DATA_DIR, 'ipc', sourceGroup);

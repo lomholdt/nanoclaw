@@ -645,31 +645,48 @@ server.tool(
 
 server.tool(
   'get_live_scores',
-  "Get today's live football scores and match status. Returns all matches for today with scores, status (upcoming/live/finished), and tournament info.",
-  {},
-  async () => {
-    // Read the cached scores snapshot written by the host service
-    const scoresFile = path.join(IPC_DIR, 'live_scores.json');
+  "Get today's live sports scores and match status. Returns all matches for today with scores, status (upcoming/live/finished), and tournament info. Supports football, tennis, handball, hockey, golf, and cycling.",
+  {
+    sport: z
+      .enum(['all', 'football', 'tennis', 'golf', 'hockey', 'handball', 'cycling'])
+      .optional()
+      .describe('Filter by sport. Default: "all"'),
+  },
+  async (args) => {
+    // Request today's scores via IPC - host will fetch and write response
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const data = {
+      type: 'get_matches',
+      date,
+      sport: args.sport || 'all',
+      timestamp: new Date().toISOString(),
+    };
+    writeIpcFile(TASKS_DIR, data);
+
+    // Wait for the host to process
+    const responseFile = path.join(IPC_DIR, `matches_${date}.json`);
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+
     try {
-      if (fs.existsSync(scoresFile)) {
-        const data = JSON.parse(fs.readFileSync(scoresFile, 'utf-8'));
+      if (fs.existsSync(responseFile)) {
+        const matches = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify(data, null, 2),
+              text: JSON.stringify(matches, null, 2),
             },
           ],
         };
       }
     } catch {
-      // Fall through to not-available message
+      // Fall through
     }
     return {
       content: [
         {
           type: 'text' as const,
-          text: 'Live scores data is not available yet. The live scores service may not be running.',
+          text: 'Scores are being fetched. Try again in a few seconds.',
         },
       ],
     };
