@@ -19,9 +19,9 @@ import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 import type { MatchEvent, MatchState } from './types.js';
 
-const LOGO_SIZE = 48;
-const CARD_WIDTH = 600;
-const CARD_HEIGHT = 140;
+const LOGO_SIZE = 96;
+const CARD_WIDTH = 700;
+const CARD_HEIGHT = 180;
 const LOGO_CACHE_DIR = path.join(DATA_DIR, 'logo-cache');
 const LOGO_BASE_URL = 'https://es-img.enetscores.com/logos/';
 
@@ -45,7 +45,10 @@ async function fetchLogo(teamId: string): Promise<Buffer | null> {
     const buffer = Buffer.from(await response.arrayBuffer());
     // Resize to standard size and convert to PNG
     const resized = await sharp(buffer)
-      .resize(LOGO_SIZE, LOGO_SIZE, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .resize(LOGO_SIZE, LOGO_SIZE, {
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
       .png()
       .toBuffer();
 
@@ -107,22 +110,22 @@ function buildSvg(
   <rect width="${CARD_WIDTH}" height="${CARD_HEIGHT}" rx="12" fill="url(#bg)"/>
 
   <!-- Event label -->
-  <text x="${CARD_WIDTH / 2}" y="28" text-anchor="middle" fill="#e94560" font-family="Arial,sans-serif" font-weight="bold" font-size="16">${label.emoji} ${escapeXml(label.text)}</text>
+  <text x="${CARD_WIDTH / 2}" y="34" text-anchor="middle" fill="#e94560" font-family="Arial,sans-serif" font-weight="bold" font-size="20">${label.emoji} ${escapeXml(label.text)}</text>
 
   <!-- Score -->
-  <text x="${CARD_WIDTH / 2}" y="78" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-weight="bold" font-size="32">${escapeXml(score)}</text>
+  <text x="${CARD_WIDTH / 2}" y="100" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-weight="bold" font-size="42">${escapeXml(score)}</text>
 
   <!-- Elapsed time -->
-  ${elapsedText ? `<text x="${CARD_WIDTH / 2}" y="96" text-anchor="middle" fill="#888888" font-family="Arial,sans-serif" font-size="12">${elapsedText}</text>` : ''}
+  ${elapsedText ? `<text x="${CARD_WIDTH / 2}" y="122" text-anchor="middle" fill="#888888" font-family="Arial,sans-serif" font-size="15">${elapsedText}</text>` : ''}
 
   <!-- Home team name (right-aligned before center) -->
-  <text x="${CARD_WIDTH / 2 - 60}" y="78" text-anchor="end" fill="#cccccc" font-family="Arial,sans-serif" font-size="14">${homeName}</text>
+  <text x="${CARD_WIDTH / 2 - 75}" y="100" text-anchor="end" fill="#cccccc" font-family="Arial,sans-serif" font-size="18">${homeName}</text>
 
   <!-- Away team name (left-aligned after center) -->
-  <text x="${CARD_WIDTH / 2 + 60}" y="78" text-anchor="start" fill="#cccccc" font-family="Arial,sans-serif" font-size="14">${awayName}</text>
+  <text x="${CARD_WIDTH / 2 + 75}" y="100" text-anchor="start" fill="#cccccc" font-family="Arial,sans-serif" font-size="18">${awayName}</text>
 
   <!-- Tournament -->
-  <text x="${CARD_WIDTH / 2}" y="122" text-anchor="middle" fill="#666666" font-family="Arial,sans-serif" font-size="12">${tournament}</text>
+  <text x="${CARD_WIDTH / 2}" y="158" text-anchor="middle" fill="#666666" font-family="Arial,sans-serif" font-size="15">${tournament}</text>
 </svg>`;
 }
 
